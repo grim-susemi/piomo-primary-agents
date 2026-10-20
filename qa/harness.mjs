@@ -265,6 +265,11 @@ function shellSafeEnvironment(sandbox, extra) {
   return environment;
 }
 
+// Exposed for the TUI probes, which launch the CLI in a Herdr pane.
+export function probeEnvironment(sandbox, extra = {}) {
+  return shellSafeEnvironment(sandbox, extra);
+}
+
 // The installed engine reads the agent dir from OMO_CODING_AGENT_DIR. The
 // harness exposes --agent-dir as the isolated entry point and maps it here;
 // it never passes a live path to the CLI.
@@ -272,6 +277,7 @@ export function headlessArgs(sandbox, {
   plugin = PLUGIN,
   mockExtension = join(ROOT, 'qa', 'mock-extension.mjs'),
   candidate = join(ROOT, 'dist', 'extension.js'),
+  extraExtensions = [],
   modelId = 'claude-mock-medium',
   thinking = 'off',
   prompt = 'PIOMO QA self-check',
@@ -304,9 +310,10 @@ export function headlessArgs(sandbox, {
       '--no-themes',
       '--no-approve',
       '--no-builtin-tools',
-      '--extension', plugin,
+      ...(plugin ? ['--extension', plugin] : []),
       '--extension', mockExtension,
       '--extension', candidate,
+      ...extraExtensions.flatMap(extension => ['--extension', extension]),
       '--provider', PROVIDER_ID,
       '--model', modelId,
       '--thinking', thinking,
@@ -386,7 +393,7 @@ export async function runHeadless(sandbox, options = {}) {
   };
 }
 
-export async function startMockProvider({ steps = [] } = {}) {
+export async function startMockProvider({ steps = [], route, captureBody = false } = {}) {
   const requests = [];
   const server = createServer(async (request, response) => {
     const chunks = [];
@@ -403,8 +410,13 @@ export async function startMockProvider({ steps = [] } = {}) {
       return;
     }
     const body = JSON.parse(chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : '{}');
-    requests.push({ url: request.url, model: body.model, messages: body.messages?.length ?? 0 });
-    const step = steps.shift() ?? { text: 'QA mock response.' };
+    requests.push({
+      url: request.url,
+      model: body.model,
+      messages: body.messages?.length ?? 0,
+      ...(captureBody ? { body } : {}),
+    });
+    const step = route?.(body, requests.length) ?? steps.shift() ?? { text: 'QA mock response.' };
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const writeChunk = (delta, finishReason = null) => response.write(`data: ${JSON.stringify({
       id: `mock-${requests.length}`,
@@ -414,7 +426,14 @@ export async function startMockProvider({ steps = [] } = {}) {
       choices: [{ index: 0, delta, finish_reason: finishReason }],
     })}\n\n`);
     writeChunk({ role: 'assistant', content: '' });
-    if (step.tool) {
+    step.onStart?.();
+    if (Array.isArray(step.chunks)) {
+      for (const chunk of step.chunks) {
+        writeChunk({ content: chunk });
+        if (step.delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, step.delayMs));
+      }
+      writeChunk({}, 'stop');
+    } else if (step.tool) {
       writeChunk({
         tool_calls: [{
           index: 0,
