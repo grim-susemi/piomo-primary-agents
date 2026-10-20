@@ -1,0 +1,22 @@
+{
+  "name": "piomo-primary-agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "peerDependencies": {
+    "@code-yeongyu/senpi": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "check": "npm test && npm run build"
+  }
+}
