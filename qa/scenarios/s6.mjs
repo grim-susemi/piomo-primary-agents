@@ -31,10 +31,15 @@ function deferred() {
 }
 
 function withTimeout(promise, ms, label) {
+  let timer = null;
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout waiting for ${label}`)), ms)),
-  ]);
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timeout waiting for ${label}`)), ms);
+    }),
+  ]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
 }
 
 export async function run({ out }) {

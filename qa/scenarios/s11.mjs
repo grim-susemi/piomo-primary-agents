@@ -7,8 +7,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  createTuiScenario, exitCli, expect, hasLabel, readText, run as runCommand, runTuiScenario, sendKeys,
-  sendText, waitOutput, waitReady,
+  closePane, createPane, createTuiScenario, exitCli, expect, hasLabel, readText,
+  run as runCommand, runTuiScenario, sendKeys, sendText, waitOutput, waitReady,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -22,7 +22,9 @@ export async function run({ out }) {
       expect(hasLabel(firstFrame), 'positive control: no label with the package installed');
       record.checks.installedLabel = firstFrame.split(/\r?\n/).filter(line => line.includes('▌')).at(-1) ?? '';
 
-      // Leave the running session, then remove the package from the same temp settings.
+      // Leave the running session, then remove the package from the same temp
+      // settings. The restart gets its own pane so the first CLI's label cannot
+      // survive in the reused terminal's scrollback.
       await exitCli(pane);
       const settingsPath = join(scenario.agentDir, 'settings.json');
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
@@ -39,17 +41,22 @@ export async function run({ out }) {
         settings: { packages: [] },
       });
       writeFileSync(join(scenario.workDir, 'alpha.txt'), 'a\n', 'utf8');
-      runCommand(pane, second.command);
-      await waitReady(pane);
-      const restarted = readText(pane);
-      expect(!hasLabel(restarted), 'the label is still shown after uninstall');
+      const fresh = createPane(scenario.workDir, 'PiOMO S11 uninstall');
+      try {
+        runCommand(fresh, second.command);
+        await waitReady(fresh);
+        const restarted = readText(fresh);
+        expect(!hasLabel(restarted), 'the label is still shown after uninstall');
 
-      sendText(pane, './');
-      sendKeys(pane, 'tab');
-      const completion = await waitOutput(pane, 'alpha.txt', { timeout: 20000 });
-      expect(completion.code === 0, 'path completion did not open after uninstall');
-      record.checks.uninstalledFrame = readText(pane);
-      record.checks.settingsAfter = JSON.parse(readFileSync(settingsPath, 'utf8'));
+        sendText(fresh, './');
+        sendKeys(fresh, 'tab');
+        const completion = await waitOutput(fresh, 'alpha.txt', { timeout: 20000 });
+        expect(completion.code === 0, 'path completion did not open after uninstall');
+        record.checks.uninstalledFrame = readText(fresh);
+        record.checks.settingsAfter = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      } finally {
+        closePane(fresh);
+      }
 
       return { ok: true, labelBefore: record.checks.installedLabel };
     },

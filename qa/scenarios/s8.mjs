@@ -39,7 +39,11 @@ export async function run({ out }) {
       sendText(pane, 'S8 stream');
       sendKeys(pane, 'enter');
       await waitOutput(pane, 'S8 streaming', { timeout: 20000 });
-      await submitText(pane, '/ulw-execute demo');
+      // Submit without Escape: Escape while streaming interrupts the turn
+      // before the submit wrap can see the busy state.
+      sendText(pane, '/ulw-execute demo');
+      await waitOutput(pane, '/ulw-execute demo', { timeout: 5000 });
+      sendKeys(pane, 'enter');
       await waitOutput(pane, '응답이 끝난 뒤 Enter를 다시 누르면 아틀라스로 실행돼요', { timeout: 15000 }).catch(() => {});
       const streamingFrame = readRecent(pane);
       await waitOutput(pane, 'S8 streaming response', { timeout: 30000 }).catch(() => {});

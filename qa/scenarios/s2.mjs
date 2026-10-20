@@ -31,10 +31,11 @@ export async function run({ out }) {
       record.checks.pathCompletion = { frame: pathFrame, label: labelLine() };
       expect(labelLine().includes('Sisyphus'), 'path Tab changed the agent');
 
-      // With the list open, Tab accepts the highlighted item.
+      // With the list open, Tab accepts the highlighted item (the first entry
+      // is folder/, so the editor must show ./folder/ after acceptance).
       sendKeys(pane, 'tab');
-      const accepted = await waitOutput(pane, 'alpha.txt', { timeout: 10000 });
-      expect(accepted.code === 0, 'Tab did not accept the path completion');
+      const accepted = await waitOutput(pane, '❯ ./folder/', { timeout: 10000 });
+      expect(accepted.code === 0, 'Tab did not accept the highlighted path completion');
       record.checks.pathAcceptedFrame = readText(pane);
 
       sendKeys(pane, 'ctrl+u');

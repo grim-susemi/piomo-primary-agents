@@ -278,10 +278,60 @@ export function waitFile(file, predicate, { timeout = 30000, label = file } = {}
   });
 }
 
+/** Wait for the footer line (token count) to name `modelId`, not the label. */
+export function waitFooterModel(pane, modelId, { timeout = 20000 } = {}) {
+  const escaped = String(modelId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return waitRegex(pane, `0/200K[^\\r\\n]*${escaped}`, { timeout });
+}
+
 /** Wait until the session file contains an entry matching `predicate`. */
 export async function waitSessionEntry(file, predicate, options = {}) {
   await waitFile(file, () => sessionEntries(file).some(predicate), options);
   return sessionEntries(file);
+}
+
+const AGENT_DISPLAY = Object.freeze({
+  sisyphus: 'Sisyphus',
+  hephaestus: 'Hephaestus',
+  prometheus: 'Prometheus',
+  atlas: 'Atlas',
+});
+
+export function agentIdentityCount(file, agentId) {
+  return identityEntries(sessionEntries(file))
+    .filter(entry => entry?.data?.agentId === agentId).length;
+}
+
+/**
+ * Wait for a *new* identity entry for `agentId` and for its painted label.
+ * The identity entry alone is written before the host command loop repaints,
+ * so a scenario that types immediately after `/agent` can race the editor.
+ * This helper is the event-based gate: bounded timeout, no sleeps.
+ */
+export async function waitAgentIdentity(pane, file, agentId, {
+  before,
+  timeout = 25000,
+  expectLabel = true,
+} = {}) {
+  const display = AGENT_DISPLAY[agentId];
+  if (!display) throw new Error(`unknown agent identity: ${agentId}`);
+  const baseline = before ?? agentIdentityCount(file, agentId);
+  await waitFile(file, () => agentIdentityCount(file, agentId) > baseline, {
+    timeout,
+    label: `${agentId} identity`,
+  });
+  if (expectLabel) {
+    const painted = await waitOutput(pane, `▌ ${display}`, { timeout });
+    if (painted.code !== 0) throw new Error(`agent label did not paint: ${display}`);
+  }
+  return sessionEntries(file);
+}
+
+/** Submit `/agent <id>` and wait for the identity entry and the label paint. */
+export async function switchAgent(pane, file, agentId, options = {}) {
+  const before = agentIdentityCount(file, agentId);
+  await submitText(pane, `/agent ${agentId}`);
+  return waitAgentIdentity(pane, file, agentId, { ...options, before });
 }
 
 /** Wait for a tool result with the given tool name (latest one). */
@@ -310,7 +360,7 @@ export function readRecent(pane, lines = 240) {
 export async function waitReady(pane, timeout = 45000) {
   const debug = process.env.PIOMO_QA_DEBUG === '1' ? (message) => console.error(`[qa] ${message}`) : () => {};
   debug(`ready: waiting for footer (${pane})`);
-  await waitRegex(pane, '\\(qa-mock\\)|Settings: settings.json', { timeout });
+  await waitRegex(pane, '\\(qa-mock\\)|Settings: settings.json|0/200K|▌ ', { timeout });
   debug('ready: footer seen');
   await waitRegex(pane, 'Tab 전환 UI를 불러오지 못했어요|▌ ', { timeout: 10000 }).catch(() => null);
   debug('ready: extension session_start paint seen or timed out');

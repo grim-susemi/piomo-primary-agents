@@ -8,8 +8,12 @@ function labelLines(text) {
   return text.split(/\r?\n/).filter(line => line.includes('▌'));
 }
 
-function footerLine(text) {
-  return text.split(/\r?\n/).filter(line => line.includes('0/200K') || line.includes('(qa-mock)')).at(-1) ?? '';
+// The status is painted on the line after the path/context footer, so include
+// the footer block rather than only the line that carries the token count.
+function footerOf(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const index = lines.findIndex(line => line.includes('0/200K') || line.includes('(qa-mock)'));
+  return index === -1 ? '' : lines.slice(index).join('\n');
 }
 
 export async function run({ out }) {
@@ -31,7 +35,7 @@ export async function run({ out }) {
           width,
           labelCount: labels.length,
           label: labels.at(-1) ?? '',
-          footer: footerLine(frame),
+          footer: footerOf(frame),
           frame,
         });
       }

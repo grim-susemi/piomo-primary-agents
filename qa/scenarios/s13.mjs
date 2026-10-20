@@ -7,9 +7,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  createTuiScenario, expect, readRecent, run as runCommand, runTuiScenario, sendKeys,
-  sendText, sessionEntries, submitText, textOfMessage, toolResults, userMessages,
-  waitOutput, waitReady, waitSessionEntry,
+  applyGateAdapter, createTuiScenario, exitCli, expect, isTitleRequest, readRecent, run as runCommand,
+  runTuiScenario, sendKeys, sendText, sessionEntries, stopStateCount, submitText, switchAgent,
+  textOfMessage, toolResults, userMessages, waitFile, waitOutput, waitReady, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES, ROOT } from '../harness.mjs';
 
@@ -34,6 +34,7 @@ function admitted(result) {
 
 export async function run({ out }) {
   const route = (body) => {
+    if (isTitleRequest(body)) return { text: 'S13 title' };
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const last = messages.at(-1);
     const text = textOfMessage(last);
@@ -41,8 +42,9 @@ export async function run({ out }) {
       return { tool: 'read', arguments: { path: '.omo/plans/demo.md' } };
     }
     const toolMessages = messages.filter(message => message?.role === 'tool');
-    const readResult = toolMessages.find(message => /demo\.md/.test(textOfMessage(message)));
-    const taskResult = toolMessages.find(message => /plan-consultant|plan-gated|No available model/i.test(textOfMessage(message)));
+    const readResult = toolMessages.find(message => textOfMessage(message).includes('# demo plan'));
+    const taskResult = toolMessages.find(message =>
+      /task_id: st_|plan-consultant|plan-gated|No available model/i.test(textOfMessage(message)));
     if (readResult && !taskResult) {
       return {
         tool: 'task',
@@ -61,27 +63,33 @@ export async function run({ out }) {
     out,
     name: 'S13',
     label: 'PiOMO S13 gate',
-    scenarioOptions: { pluginCopy: true, modelProfiles: OMO },
+    scenarioOptions: {
+      pluginCopy: true,
+      modelProfiles: OMO,
+      patchPlugin: (copy) => applyGateAdapter(copy, join(copy, '..', 'adapter-state')),
+    },
     mockOptions: { route },
     body: async (pane, record, scenario) => {
       mkdirSync(join(scenario.workDir, '.omo', 'plans'), { recursive: true });
       writeFileSync(join(scenario.workDir, '.omo', 'plans', 'demo.md'), '# demo plan\n', 'utf8');
       const editor = record.checks.editorInstalled === true;
+      const runTurn = async (text, file = scenario.sessionFile) => {
+        const before = stopStateCount(sessionEntries(file));
+        await submitText(pane, text);
+        await waitTurnEnd(file, before, { timeout: 45000 }).catch(() => null);
+      };
 
-      sendText(pane, '/agent prometheus');
-      sendKeys(pane, 'enter');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'prometheus',
-      { timeout: 25000, label: 'prometheus identity' });
+      await switchAgent(pane, scenario.sessionFile, 'prometheus');
 
-      await submitText(pane, '플랜 짜줘 데모');
-      await waitOutput(pane, 'S13 done', { timeout: 45000 }).catch(() => {});
+      await runTurn('플랜 짜줘 데모');
       const firstEntries = sessionEntries(scenario.sessionFile);
       const firstUsers = userMessages(firstEntries);
       const firstTask = toolResults(firstEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
       record.checks.first = {
         userMessages: firstUsers,
-        rewritten: firstUsers.some(message => message.startsWith('/skill:ulw-plan 플랜 짜줘 데모')),
+        rewritten: firstUsers.some(message =>
+          message.includes('The user explicitly invoked the "ulw-plan" skill')
+          && message.includes('플랜 짜줘 데모')),
         taskResult: firstTask,
         admitted: admitted(firstTask),
       };
@@ -102,34 +110,57 @@ export async function run({ out }) {
         sessionName: 'owned',
         sessionArg: sessionId,
       });
+      const startupScans = () => sessionEntries(scenario.sessionFile)
+        .filter(entry => entry?.type === 'custom' && entry.customType === 'pi-rules.scan').length;
+      const scansBefore = startupScans();
       runCommand(pane, restarted.command);
+      await waitFile(scenario.sessionFile, () => startupScans() > scansBefore, {
+        timeout: 30000,
+        label: 'restarted session startup',
+      });
       await waitReady(pane);
-      sendText(pane, '/agent prometheus');
-      sendKeys(pane, 'enter');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'prometheus',
-      { timeout: 25000, label: 'prometheus identity after restart' });
-      await submitText(pane, '플랜 짜줘 데모');
-      await waitOutput(pane, 'S13 done', { timeout: 45000 }).catch(() => {});
+      const restored = sessionEntries(scenario.sessionFile)
+        .filter(entry => entry?.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1);
+      expect(restored?.data?.agentId === 'prometheus',
+        'the restarted session did not resume Prometheus');
+      await waitOutput(pane, '▌ Prometheus', { timeout: 20000 });
+      await runTurn('플랜 짜줘 데모');
       const secondEntries = sessionEntries(scenario.sessionFile);
       const secondUsers = userMessages(secondEntries);
       const secondTask = toolResults(secondEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
       record.checks.afterRestart = {
         userMessages: secondUsers,
-        rewritten: secondUsers.filter(message => message.startsWith('/skill:ulw-plan 플랜 짜줘 데모')).length >= 2,
+        rewritten: secondUsers.filter(message =>
+          message.includes('The user explicitly invoked the "ulw-plan" skill')
+          && message.includes('플랜 짜줘 데모')).length >= 2,
         taskResult: secondTask,
         admitted: admitted(secondTask),
         sessionId: secondEntries[0]?.id ?? null,
       };
 
-      // Positive control: the same text on Sisyphus is refused.
-      await submitText(pane, '/agent sisyphus');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'sisyphus',
-      { timeout: 25000, label: 'sisyphus identity' });
-      await submitText(pane, '플랜 짜줘 데모');
-      await waitOutput(pane, 'S13 done', { timeout: 45000 }).catch(() => {});
-      const controlEntries = sessionEntries(scenario.sessionFile);
+      // Positive control: a new session starts on Sisyphus with an empty gate
+      // state, so the same plain text is refused.
+      await exitCli(pane);
+      const control = createTuiScenario({
+        name: 'S13-control',
+        sandbox: scenario.sandbox,
+        mockUrl: scenario.mockUrl,
+        packages: [ROOT],
+        pluginPath: scenario.pluginPath,
+        modelProfiles: OMO,
+        sessionName: 'control',
+      });
+      const controlScans = () => sessionEntries(control.sessionFile)
+        .filter(entry => entry?.type === 'custom' && entry.customType === 'pi-rules.scan').length;
+      runCommand(pane, control.command);
+      await waitFile(control.sessionFile, () => controlScans() > 0, {
+        timeout: 30000,
+        label: 'control session startup',
+      });
+      await waitReady(pane);
+      await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 });
+      await runTurn('플랜 짜줘 데모', control.sessionFile);
+      const controlEntries = sessionEntries(control.sessionFile);
       const controlTask = toolResults(controlEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
       record.checks.positiveControl = {
         taskResult: controlTask,

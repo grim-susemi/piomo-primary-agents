@@ -5,7 +5,7 @@
 import { parseArgs } from 'node:util';
 import {
   expect, listSessionFilesDeep, readRecent, runTuiScenario, sendKeys, sendText,
-  sessionEntries, waitForSessionContaining, waitOutput, waitSessionEntry,
+  sessionEntries, waitFooterModel, waitForSessionContaining, waitOutput, waitSessionEntry,
 } from './lib.mjs';
 
 const LANE_MODELS = {
@@ -16,7 +16,7 @@ const LANE_MODELS = {
 };
 
 function footerOf(text) {
-  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('(qa-mock)')).at(-1) ?? '';
+  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('0/200K')).at(-1) ?? '';
 }
 
 function lastModel(entries) {
@@ -33,7 +33,7 @@ export async function run({ out }) {
       settings: { defaultProvider: 'qa-mock', defaultModel: 'qa-mock/claude-mock-max' },
     },
     body: async (pane, record, scenario) => {
-      await waitOutput(pane, 'claude-mock-medium', { timeout: 25000 });
+      await waitFooterModel(pane, 'claude-mock-medium');
       const startupEntries = sessionEntries(scenario.sessionFile);
       record.checks.startup = {
         footer: footerOf(readRecent(pane)),
@@ -54,7 +54,7 @@ export async function run({ out }) {
             && entry.customType === 'primary-agent/v1' && entry.data?.agentId === agentId,
           { timeout: 25000, label: `${agentId} identity` });
         }
-        await waitOutput(pane, expected.modelId, { timeout: 20000 });
+        await waitFooterModel(pane, expected.modelId);
         const entries = sessionEntries(scenario.sessionFile);
         const model = lastModel(entries);
         const footer = footerOf(readRecent(pane));

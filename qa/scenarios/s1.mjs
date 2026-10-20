@@ -3,8 +3,8 @@
 // Sisyphus. `/agent atlas` -> Atlas. `/agent` alone opens the selector.
 import { parseArgs } from 'node:util';
 import {
-  expect, readText, runTuiScenario, sendKeys, sendText, sessionEntries,
-  waitOutput, waitSessionEntry,
+  expect, readText, runTuiScenario, sendKeys, sessionEntries, submitText, switchAgent,
+  waitOutput,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -27,11 +27,7 @@ export async function run({ out }) {
       }
       record.checks.labels = labels;
 
-      sendText(pane, '/agent atlas');
-      sendKeys(pane, 'enter');
-      const entries = await waitSessionEntry(entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1'
-        && entry.data?.agentId === 'atlas', { timeout: 20000, label: 'atlas identity' });
+      const entries = await switchAgent(pane, record.sessionFile, 'atlas');
       const atlasPainted = await waitOutput(pane, '▌ Atlas', { timeout: 20000 });
       expect(atlasPainted.code === 0, '/agent atlas did not paint Atlas');
       record.checks.agentCommand = {
@@ -39,8 +35,7 @@ export async function run({ out }) {
         label: labelLine(),
       };
 
-      sendText(pane, '/agent');
-      sendKeys(pane, 'enter');
+      await submitText(pane, '/agent');
       const selector = await waitOutput(pane, '에이전트 선택', { timeout: 20000 });
       expect(selector.code === 0, '/agent alone did not open the selector');
       record.checks.selectorFrame = readText(pane);

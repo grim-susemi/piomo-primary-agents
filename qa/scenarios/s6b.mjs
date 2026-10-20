@@ -3,14 +3,14 @@
 // package-removed run after normalizing volatile fields, and a scripted
 // 5-tool turn has no blocked call. Both runs use fresh temp agent dirs/homes
 // and the same cwd, so first-run state (MCP discovery, onboarding) is equal.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   createTuiScenario, expect, isTitleRequest, normalizeVolatile, runTuiScenario, sendKeys,
   sendText, sessionEntries, sha256, startMock, systemPromptOf, textOfMessage, toolResults,
-  waitOutput,
+  waitFile, waitOutput,
 } from './lib.mjs';
 
 const TOOLS = [
@@ -27,15 +27,41 @@ const BLOCK_MARKERS = [
   '이 도구는 이 에이전트에게 막혀 있어요',
 ];
 
+// The plugin registers context7 as a lazy MCP server. Its instructions land only
+// after the catalog cache exists; waiting on that event keeps the package and
+// package-removed runs at the same MCP state instead of racing the first turn.
+async function waitMcpCache(scenario) {
+  const cacheDir = join(scenario.agentDir, 'cache');
+  const cacheFile = join(cacheDir, 'mcp-cache.json');
+  mkdirSync(cacheDir, { recursive: true });
+  await waitFile(cacheFile,
+    () => existsSync(cacheFile) && readFileSync(cacheFile, 'utf8').includes('context7'),
+    { timeout: 30000, label: 'context7 MCP cache' });
+}
+
 export async function run({ out }) {
-  const state = { packagePrompt: null, noPackagePrompt: null, run: 'package' };
+  const state = { packagePrompt: null, noPackagePrompt: null, run: 'package', prompts: [] };
+  const recordPrompt = (label, body) => {
+    const prompt = systemPromptOf(body);
+    state.prompts.push({
+      run: state.run,
+      label,
+      length: prompt.length,
+      hasMcp: prompt.includes('mcp_instructions'),
+      tail: prompt.slice(-700),
+    });
+  };
   const route = (body) => {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const last = messages.at(-1);
     const lastText = textOfMessage(last);
-    if (lastText.includes('S6B warmup')) return { text: 'S6B warmup done' };
+    if (lastText.includes('S6B warmup')) {
+      if (!isTitleRequest(body)) recordPrompt('warmup', body);
+      return { text: 'S6B warmup done' };
+    }
     if (lastText.includes('S6B prompt')) {
       if (isTitleRequest(body)) return { text: 'S6B title' };
+      recordPrompt('prompt', body);
       const key = state.run === 'nopackage' ? 'noPackagePrompt' : 'packagePrompt';
       if (!state[key]) state[key] = systemPromptOf(body);
       return { tool: TOOLS[0].tool, arguments: TOOLS[0].arguments };
@@ -78,6 +104,7 @@ export async function run({ out }) {
       label: 'PiOMO S6b Sisyphus (package)',
       keepSandbox: true,
       body: async (pane, record, scenario) => {
+        await waitMcpCache(scenario);
         sendText(pane, 'S6B warmup');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B warmup done', { timeout: 30000 });
@@ -94,6 +121,7 @@ export async function run({ out }) {
         expect(results.every(result => result.isError === false),
           `a Sisyphus tool call errored: ${JSON.stringify(results.filter(result => result.isError))}`);
         record.checks.promptHasMarker = String(state.packagePrompt).includes('piomo-primary-agent:begin');
+        record.checks.promptTurns = state.prompts.filter(entry => entry.run === 'package');
         expect(record.checks.promptHasMarker === false,
           'the Sisyphus package prompt carries a piomo-primary-agent block');
         return { ok: true, toolResults: results.length };
@@ -114,7 +142,8 @@ export async function run({ out }) {
         sessionName: 'nopackage',
       },
       label: 'PiOMO S6b Sisyphus (no package)',
-      body: async (pane) => {
+      body: async (pane, record, scenario) => {
+        await waitMcpCache(scenario);
         sendText(pane, 'S6B warmup');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B warmup done', { timeout: 30000 });
@@ -161,6 +190,7 @@ export async function run({ out }) {
       checks: {
         packageRun,
         noPackageRun: noPackage,
+        promptTurns: state.prompts,
         hashA,
         hashB,
         equal: hashA === hashB,

@@ -3,9 +3,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  applyGateAdapter, expect, readRecent, runTuiScenario, sendKeys, sendText,
-  sessionEntries, stopStateCount, submitText, textOfMessage, toolResults, waitOutput,
-  waitSessionEntry, waitTurnEnd,
+  agentIdentityCount, applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario, sendKeys,
+  sessionEntries, stopStateCount, submitText, switchAgent, textOfMessage, toolResults,
+  waitAgentIdentity, waitOutput, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES } from '../harness.mjs';
 
@@ -25,19 +25,19 @@ function refused(result) {
 }
 
 function planTaskResults(file) {
-  return toolResults(sessionEntries(file))
-    .filter(result => result.toolName === 'task'
-      && /plan-gated|Agent "plan-consultant"|No available model for agent "plan-consultant"/.test(result.text));
+  return toolResults(sessionEntries(file)).filter(result => result.toolName === 'task');
 }
 
 export async function runReplan({ out, name, adapter }) {
   const route = (body) => {
+    if (isTitleRequest(body)) return { text: 'S14 title' };
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const lastUserIndex = messages.findLastIndex(message => message?.role === 'user');
     if (lastUserIndex === -1) return { text: 'S14 done' };
     const turnText = textOfMessage(messages[lastUserIndex]);
     const turnTools = messages.slice(lastUserIndex + 1).filter(message => message?.role === 'tool');
-    const taskSeen = turnTools.some(message => /plan-consultant|plan-gated|No available model|S14 background/i.test(textOfMessage(message)));
+    const taskSeen = turnTools.some(message =>
+      /task_id: st_|plan-consultant|plan-gated|No available model|S14 background/i.test(textOfMessage(message)));
     if (turnText.includes('S14 background work marker')) {
       return { text: 'S14 background done' };
     }
@@ -53,6 +53,21 @@ export async function runReplan({ out, name, adapter }) {
         },
       };
     }
+    if (turnText.includes('방향 다시 잡자')) {
+      if (taskSeen) return { text: 'S14 done' };
+      if (turnTools.length === 0) {
+        return { tool: 'write', arguments: { path: '.omo/plans/demo.md', content: '# demo plan\n' } };
+      }
+      return {
+        tool: 'task',
+        arguments: {
+          subagent_type: 'plan-consultant',
+          prompt: 'S14 re-plan',
+          description: 'S14 re-plan',
+          run_in_background: false,
+        },
+      };
+    }
     if (turnText.includes('ulw-execute')) {
       if (taskSeen) return { text: 'S14 done' };
       return {
@@ -61,20 +76,6 @@ export async function runReplan({ out, name, adapter }) {
           subagent_type: 'plan-consultant',
           prompt: 'S14 execute-time plan',
           description: 'S14 execute-time plan',
-          run_in_background: false,
-        },
-      };
-    }
-    if (turnText.includes('방향 다시 잡자')) {
-      const readSeen = turnTools.some(message => /demo\.md/.test(textOfMessage(message)));
-      if (taskSeen) return { text: 'S14 done' };
-      if (!readSeen) return { tool: 'read', arguments: { path: '.omo/plans/demo.md' } };
-      return {
-        tool: 'task',
-        arguments: {
-          subagent_type: 'plan-consultant',
-          prompt: 'S14 re-plan',
-          description: 'S14 re-plan',
           run_in_background: false,
         },
       };
@@ -100,11 +101,7 @@ export async function runReplan({ out, name, adapter }) {
       writeFileSync(join(scenario.workDir, '.omo', 'plans', 'demo.md'), '# demo plan\n', 'utf8');
       const editor = record.checks.editorInstalled === true;
 
-      sendText(pane, '/agent prometheus');
-      sendKeys(pane, 'enter');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'prometheus',
-      { timeout: 25000, label: 'prometheus identity' });
+      await switchAgent(pane, scenario.sessionFile, 'prometheus');
 
       const runTurn = async (text, { expectPlanTask = false } = {}) => {
         const turnBefore = stopStateCount(sessionEntries(scenario.sessionFile));
@@ -133,18 +130,16 @@ export async function runReplan({ out, name, adapter }) {
       // 3. Re-plan in the same session: Tab back to Prometheus when the editor
       //    exists, otherwise /agent as a recorded fallback.
       if (editor) {
+        const prometheusBefore = agentIdentityCount(scenario.sessionFile, 'prometheus');
         await waitOutput(pane, '▌ Atlas', { timeout: 20000 });
         for (let attempt = 0; attempt < 3; attempt += 1) {
           sendKeys(pane, 'tab');
         }
         const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 25000 });
         expect(prometheus.code === 0, 'Tab did not return to Prometheus');
+        await waitAgentIdentity(pane, scenario.sessionFile, 'prometheus', { before: prometheusBefore });
       } else {
-        sendText(pane, '/agent prometheus');
-        sendKeys(pane, 'enter');
-        await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-          && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'prometheus',
-        { timeout: 25000, label: 'prometheus fallback identity' });
+        await switchAgent(pane, scenario.sessionFile, 'prometheus', { expectLabel: false });
       }
       const replanTask = await runTurn('방향 다시 잡자', { expectPlanTask: true });
       record.checks.replan = {

@@ -3,8 +3,8 @@
 // Prometheus message is unchanged; a /model command is never rewritten.
 import { parseArgs } from 'node:util';
 import {
-  expect, readRecent, runTuiScenario, sendKeys, sendText, sessionEntries,
-  submitText, userMessages, waitOutput, waitSessionEntry,
+  expect, runTuiScenario, sessionEntries, stopStateCount, submitText, switchAgent,
+  userMessages, waitSessionEntry, waitTurnEnd,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -15,21 +15,22 @@ export async function run({ out }) {
     mockOptions: { route },
     body: async (pane, record, scenario) => {
       const editor = record.checks.editorInstalled === true;
-      sendText(pane, '/agent prometheus');
-      sendKeys(pane, 'enter');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-        && entry.customType === 'primary-agent/v1' && entry.data?.agentId === 'prometheus',
-      { timeout: 25000, label: 'prometheus identity' });
+      const runTurn = async (text) => {
+        const before = stopStateCount(sessionEntries(scenario.sessionFile));
+        await submitText(pane, text);
+        await waitTurnEnd(scenario.sessionFile, before, { timeout: 30000 }).catch(() => null);
+      };
+      await switchAgent(pane, scenario.sessionFile, 'prometheus');
 
-      await submitText(pane, '계획 잡아줘 데모');
-      await waitOutput(pane, 'S9 first done', { timeout: 30000 }).catch(() => {});
+      await runTurn('계획 잡아줘 데모');
       const firstEntries = sessionEntries(scenario.sessionFile);
-      record.checks.firstUserMessages = userMessages(firstEntries).map(message => message.slice(0, 400));
+      const firstUsers = userMessages(firstEntries);
+      record.checks.firstUserMessages = firstUsers.map(message => message.slice(0, 400));
 
-      await submitText(pane, '두 번째 메시지');
-      await waitOutput(pane, 'S9 second done', { timeout: 30000 }).catch(() => {});
+      await runTurn('두 번째 메시지');
       const secondEntries = sessionEntries(scenario.sessionFile);
-      record.checks.secondUserMessages = userMessages(secondEntries).map(message => message.slice(0, 400));
+      const secondUsers = userMessages(secondEntries);
+      record.checks.secondUserMessages = secondUsers.map(message => message.slice(0, 400));
 
       await submitText(pane, '/model claude-mock-max');
       await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'model_change'
@@ -37,8 +38,10 @@ export async function run({ out }) {
       record.checks.modelCommandUserMessages = userMessages(sessionEntries(scenario.sessionFile))
         .map(message => message.slice(0, 400));
 
-      const rewritten = record.checks.firstUserMessages.some(message => message.startsWith('/skill:ulw-plan 계획 잡아줘 데모'));
-      const secondUnchanged = record.checks.secondUserMessages.some(message => message === '두 번째 메시지');
+      const rewritten = firstUsers.some(message =>
+        message.includes('The user explicitly invoked the "ulw-plan" skill')
+        && message.includes('계획 잡아줘 데모'));
+      const secondUnchanged = secondUsers.some(message => message === '두 번째 메시지');
       const modelNotRewritten = !record.checks.modelCommandUserMessages.some(message => message.includes('/skill:ulw-plan /model'));
       record.checks.rewritten = rewritten;
       record.checks.secondUnchanged = secondUnchanged;
