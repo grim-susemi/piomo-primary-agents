@@ -1,0 +1,219 @@
+[
+  {
+    "type": "model_change",
+    "id": "m0",
+    "parentId": null,
+    "timestamp": "2026-10-20T01:11:08.274Z",
+    "provider": "qa-mock",
+    "modelId": "claude-mock-medium"
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t0",
+    "parentId": "m0",
+    "timestamp": "2026-10-20T01:11:08.274Z",
+    "thinkingLevel": "off",
+    "thinkingSelection": { "level": "off", "source": "explicit" }
+  },
+  {
+    "type": "custom",
+    "customType": "pi-rules.scan",
+    "id": "c0",
+    "parentId": "t0",
+    "timestamp": "2026-10-20T01:11:08.343Z",
+    "data": { "reason": "startup" }
+  },
+  {
+    "type": "custom",
+    "customType": "primary-agent/v1",
+    "id": "i0",
+    "parentId": "c0",
+    "timestamp": "2026-10-20T01:11:09.000Z",
+    "data": { "schemaVersion": 1, "agentId": "prometheus" }
+  },
+  {
+    "type": "model_change",
+    "id": "m1",
+    "parentId": "i0",
+    "timestamp": "2026-10-20T01:11:10.000Z",
+    "source": "command",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m2",
+    "parentId": "m1",
+    "timestamp": "2026-10-20T01:11:11.000Z",
+    "source": "picker",
+    "actor": "model-selector",
+    "provider": "qa-mock",
+    "modelId": "claude-mock-max"
+  },
+  {
+    "type": "model_change",
+    "id": "m3",
+    "parentId": "m2",
+    "timestamp": "2026-10-20T01:11:12.000Z",
+    "source": "cycle",
+    "provider": "qa-mock",
+    "modelId": "claude-mock-medium"
+  },
+  {
+    "type": "model_change",
+    "id": "m4",
+    "parentId": "m3",
+    "timestamp": "2026-10-20T01:11:13.000Z",
+    "source": "extension",
+    "actor": "C:/Users/USER/orca/projects/piomo-primary-agents/qa/probes/p3-origins.mjs",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m5",
+    "parentId": "m4",
+    "timestamp": "2026-10-20T01:11:14.000Z",
+    "source": "rpc",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m6",
+    "parentId": "m5",
+    "timestamp": "2026-10-20T01:11:15.000Z",
+    "source": "control",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m7",
+    "parentId": "m6",
+    "timestamp": "2026-10-20T01:11:16.000Z",
+    "source": "provider-login",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m8",
+    "parentId": "m7",
+    "timestamp": "2026-10-20T01:11:17.000Z",
+    "source": "fallback",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m9",
+    "parentId": "m8",
+    "timestamp": "2026-10-20T01:11:18.000Z",
+    "source": "fallback-revert",
+    "provider": "qa-mock",
+    "modelId": "claude-mock-medium"
+  },
+  {
+    "type": "model_change",
+    "id": "m10",
+    "parentId": "m9",
+    "timestamp": "2026-10-20T01:11:19.000Z",
+    "source": "held-switch",
+    "actor": "command",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m11",
+    "parentId": "m10",
+    "timestamp": "2026-10-20T01:11:20.000Z",
+    "source": "restore",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m12",
+    "parentId": "m11",
+    "timestamp": "2026-10-20T01:11:21.000Z",
+    "source": "sdk",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "model_change",
+    "id": "m13",
+    "parentId": "m12",
+    "timestamp": "2026-10-20T01:11:22.000Z",
+    "provider": "qa-mock",
+    "modelId": "gpt-mock-fast"
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t1",
+    "parentId": "m13",
+    "timestamp": "2026-10-20T01:11:23.000Z",
+    "thinkingLevel": "minimal",
+    "thinkingSelection": { "level": "minimal", "source": "explicit" }
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t2",
+    "parentId": "t1",
+    "timestamp": "2026-10-20T01:11:24.000Z",
+    "thinkingLevel": "high",
+    "thinkingSelection": { "level": "high", "source": "editor" }
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t3",
+    "parentId": "t2",
+    "timestamp": "2026-10-20T01:11:25.000Z",
+    "thinkingLevel": "max",
+    "thinkingSelection": { "level": "max", "source": "explicit" },
+    "triggerSource": "command"
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t4",
+    "parentId": "t3",
+    "timestamp": "2026-10-20T01:11:26.000Z",
+    "thinkingLevel": "low",
+    "thinkingSelection": { "level": "low", "source": "explicit" },
+    "triggerActor": "rpc-client"
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t5",
+    "parentId": "t4",
+    "timestamp": "2026-10-20T01:11:27.000Z",
+    "thinkingLevel": "medium"
+  },
+  {
+    "type": "custom",
+    "customType": "primary-agent/v1",
+    "id": "i1",
+    "parentId": "t5",
+    "timestamp": "2026-10-20T01:11:28.000Z",
+    "data": { "schemaVersion": 1, "agentId": "atlas" }
+  },
+  {
+    "type": "model_change",
+    "id": "m14",
+    "parentId": "i1",
+    "timestamp": "2026-10-20T01:11:29.000Z",
+    "source": "command",
+    "provider": "qa-mock",
+    "modelId": "gpt-6-astra"
+  },
+  {
+    "type": "thinking_level_change",
+    "id": "t6",
+    "parentId": "m14",
+    "timestamp": "2026-10-20T01:11:30.000Z",
+    "thinkingLevel": "xhigh",
+    "thinkingSelection": { "level": "xhigh", "source": "explicit" }
+  }
+]

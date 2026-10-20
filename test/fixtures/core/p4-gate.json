@@ -1,0 +1,40 @@
+{
+  "source": "todo 2 P4 probe (task-2-piomo-primary-agents-probes.md): parent print session vs task child rpc session, both sessionKind interactive",
+  "cases": [
+    {
+      "name": "parent print session is not primary main",
+      "sessionKind": "interactive",
+      "mode": "print",
+      "hasUI": false,
+      "primaryMain": false
+    },
+    {
+      "name": "task child rpc session is not primary main",
+      "sessionKind": "interactive",
+      "mode": "rpc",
+      "hasUI": true,
+      "primaryMain": false
+    },
+    {
+      "name": "interactive tui main session is primary main",
+      "sessionKind": "interactive",
+      "mode": "tui",
+      "hasUI": true,
+      "primaryMain": true
+    },
+    {
+      "name": "worker session is not primary main",
+      "sessionKind": "worker",
+      "mode": "tui",
+      "hasUI": true,
+      "primaryMain": false
+    },
+    {
+      "name": "tui without a UI is not primary main",
+      "sessionKind": "interactive",
+      "mode": "tui",
+      "hasUI": false,
+      "primaryMain": false
+    }
+  ]
+}
