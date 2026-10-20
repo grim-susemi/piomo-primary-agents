@@ -45,10 +45,20 @@ test('package shape matches the pi package contract', () => {
   assert.equal(pkg.scripts.check, 'npm test && npm run build');
 });
 
-test('src/index.mjs exports a no-op extension', async () => {
+test('src/index.mjs exports a factory that registers the orchestration handlers', async () => {
   const module = await import('../src/index.mjs');
   assert.equal(typeof module.default, 'function');
-  assert.equal(module.default({}), undefined);
+  const handlers = new Map();
+  const pi = {
+    on(event, handler, options) { handlers.set(event, { handler, options }); return () => {}; },
+    registerCommand(name) { handlers.set(`command:${name}`, {}); },
+  };
+  assert.equal(module.default(pi), undefined);
+  for (const event of ['session_start', 'input', 'model_select', 'before_agent_start', 'tool_call', 'tool_result', 'session_shutdown']) {
+    assert.equal(typeof handlers.get(event)?.handler, 'function', `${event} handler is registered at factory time`);
+  }
+  assert.equal(handlers.get('before_agent_start').options.previewSafe, true);
+  assert.ok(handlers.has('command:agent'));
 });
 
 test('dist/extension.js is the committed package entry stub', () => {
