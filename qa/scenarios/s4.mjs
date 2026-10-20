@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   createTuiScenario, exitCli, expect, readRecent, readText, run as runCommand, runTuiScenario,
-  sendKeys, sendText, submitText, waitOutput, waitReady, waitSessionEntry,
+  sendKeys, sendText, submitText, waitOutput, waitRestartReady, waitSessionEntry,
 } from './lib.mjs';
 import { memoryPath } from '../../contract/schema.mjs';
 import { ROOT } from '../harness.mjs';
@@ -43,6 +43,7 @@ export async function run({ out }) {
     label: 'PiOMO S4 model memory',
     body: async (pane, record, scenario) => {
       const hephMemory = memoryPath(scenario.agentDir, 'hephaestus');
+      const hephBefore = hashFile(hephMemory);
       const others = ['sisyphus', 'prometheus', 'atlas'].map(id => ({
         id,
         path: memoryPath(scenario.agentDir, id),
@@ -81,6 +82,10 @@ export async function run({ out }) {
         ? JSON.parse(readFileSync(hephMemory, 'utf8')) : null;
       expect(record.checks.memoryAfterRoundTrip?.model?.modelId === 'gpt-mock-sol',
         `memory was not written: ${JSON.stringify(record.checks.memoryAfterRoundTrip)}`);
+      record.checks.hephaestusMemoryBefore = hephBefore;
+      record.checks.hephaestusMemoryAfterRoundTrip = hashFile(hephMemory);
+      expect(record.checks.hephaestusMemoryAfterRoundTrip !== hephBefore,
+        `memory/hephaestus.json did not change: ${hephBefore}`);
 
       const beforeNonGpt = hashFile(hephMemory);
       await command(pane, '/model claude-mock-max', scenario.sessionFile,
@@ -90,6 +95,9 @@ export async function run({ out }) {
         .filter(line => line.includes('Hephaestus는 GPT 모델만 기억해요')).at(0) ?? null;
       record.checks.memoryAfterNonGpt = hashFile(hephMemory);
       record.checks.memoryUnchangedAfterNonGpt = beforeNonGpt === record.checks.memoryAfterNonGpt;
+      expect(record.checks.nonGptNotice !== null, 'the non-GPT pick did not show its one notice');
+      expect(record.checks.memoryUnchangedAfterNonGpt === true,
+        `a non-GPT pick changed memory/hephaestus.json: ${beforeNonGpt} -> ${record.checks.memoryAfterNonGpt}`);
 
       // Restart = a new CLI process and a new session against the same temp agent dir.
       const second = createTuiScenario({
@@ -102,7 +110,10 @@ export async function run({ out }) {
       });
       await exitCli(pane);
       runCommand(pane, second.command);
-      await waitReady(pane);
+      // Restart race: only send /agent after the NEW CLI wrote its own startup
+      // scan into the restart session file and painted its editor/footer.
+      await waitRestartReady(pane, second.sessionFile, { timeout: 30000 });
+      record.checks.restartStartupGate = 'custom pi-rules.scan in restarted.jsonl';
       await command(pane, '/agent hephaestus', second.sessionFile,
         modelChange('gpt-mock-sol', 'extension'), 'memory restored on restart');
       record.checks.restartFooter = footerOf(readRecent(pane));
@@ -111,6 +122,14 @@ export async function run({ out }) {
         before: entry.before,
         after: hashFile(entry.path),
       }));
+      expect(record.checks.othersUnchanged.every(entry => entry.before === entry.after),
+        `another agent's memory changed: ${JSON.stringify(record.checks.othersUnchanged)}`);
+      record.checks.restartMemory = existsSync(hephMemory)
+        ? JSON.parse(readFileSync(hephMemory, 'utf8')) : null;
+      expect(record.checks.restartMemory?.model?.modelId === 'gpt-mock-sol',
+        `restart memory is not gpt-mock-sol: ${JSON.stringify(record.checks.restartMemory)}`);
+      expect(record.checks.restartFooter.includes('gpt-mock-sol'),
+        `restart footer does not name gpt-mock-sol: ${record.checks.restartFooter}`);
 
       return {
         ok: editor && record.checks.tabRoundTrip === true,

@@ -5,13 +5,15 @@ import { join } from 'node:path';
 import {
   agentIdentityCount, applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario, sendKeys,
   sessionEntries, stopStateCount, submitText, switchAgent, textOfMessage, toolResults,
-  waitAgentIdentity, waitOutput, waitTurnEnd,
+  waitAgentIdentity, waitFile, waitOutput, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES } from '../harness.mjs';
 
 const OMO = {
   model_profiles: SEEDED_MODEL_PROFILES,
-  task: { default_execution_mode: 'process', process_runner: 'child-process' },
+  // The background child must run inside this CLI: the process runner cannot
+  // start under the temp plugin copy, while the in-process runner can.
+  task: { default_execution_mode: 'in-process' },
   agents: {
     'plan-consultant': { model: 'qa-mock/claude-mock-medium', variant: 'medium' },
   },
@@ -36,8 +38,10 @@ export async function runReplan({ out, name, adapter }) {
     if (lastUserIndex === -1) return { text: 'S14 done' };
     const turnText = textOfMessage(messages[lastUserIndex]);
     const turnTools = messages.slice(lastUserIndex + 1).filter(message => message?.role === 'tool');
+    // Stop only after a task tool result (not after the plan-file write); a
+    // failed runner must also stop the scripted call instead of looping.
     const taskSeen = turnTools.some(message =>
-      /task_id: st_|plan-consultant|plan-gated|No available model|S14 background/i.test(textOfMessage(message)));
+      /task_id: st_|plan-consultant|plan-gated|No available model|Task runner failed to start|S14 background/i.test(textOfMessage(message)));
     if (turnText.includes('S14 background work marker')) {
       return { text: 'S14 background done' };
     }
@@ -46,7 +50,7 @@ export async function runReplan({ out, name, adapter }) {
       return {
         tool: 'task',
         arguments: {
-          subagent_type: 'explore',
+          category: 'quick',
           prompt: 'S14 background work marker',
           description: 'S14 background child',
           run_in_background: true,
@@ -120,12 +124,31 @@ export async function runReplan({ out, name, adapter }) {
       record.checks.afterExecuteAgent = sessionEntries(scenario.sessionFile)
         .filter(entry => entry?.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1) ?? null;
 
-      // 2. A background task child started before the re-plan.
+      // 2. A background task child started before the re-plan. Its completion
+      //    must land in THIS session; wait for the child's own result text.
       await runTurn('S14 spawn background child');
+      let backgroundEntry = null;
+      let backgroundWaitError = null;
+      try {
+        const entries = await waitFile(scenario.sessionFile,
+          () => sessionEntries(scenario.sessionFile).some(entry =>
+            JSON.stringify(entry).includes('S14 background done')),
+          { timeout: 30000, label: 'S14 background child result' })
+          .then(() => sessionEntries(scenario.sessionFile));
+        backgroundEntry = entries.find(entry =>
+          JSON.stringify(entry).includes('S14 background done')) ?? null;
+      } catch (error) {
+        backgroundWaitError = String(error?.message ?? error);
+      }
       record.checks.background = {
+        done: backgroundEntry !== null,
+        result: backgroundEntry,
+        error: backgroundWaitError,
         entries: sessionEntries(scenario.sessionFile).filter(entry =>
           /S14 background|senpi-task|taskResult/i.test(JSON.stringify(entry))).slice(-8),
       };
+      expect(backgroundEntry !== null,
+        `the background task child did not report to this session: ${backgroundWaitError ?? 'no result entry'}`);
 
       // 3. Re-plan in the same session: Tab back to Prometheus when the editor
       //    exists, otherwise /agent as a recorded fallback.
@@ -157,6 +180,7 @@ export async function runReplan({ out, name, adapter }) {
 
       const ok = editor
         && record.checks.afterExecute.refused === true
+        && record.checks.background.done === true
         && record.checks.replan.admitted === (adapter === true)
         && record.checks.afterExecuteAgain.refused === true
         && (adapter === true || record.checks.replan.notice !== null);

@@ -32,22 +32,39 @@ export async function run({ out }) {
       const secondUsers = userMessages(secondEntries);
       record.checks.secondUserMessages = secondUsers.map(message => message.slice(0, 400));
 
+      // Positive observation of the /model path: the command must leave its own
+      // model_change entry. A timeout here FAILS the scenario instead of being
+      // swallowed as "nothing was rewritten".
+      const beforeModelUsers = [...secondUsers];
       await submitText(pane, '/model claude-mock-max');
-      await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'model_change'
-        && entry.modelId === 'claude-mock-max', { timeout: 25000, label: 'model command' }).catch(() => null);
-      record.checks.modelCommandUserMessages = userMessages(sessionEntries(scenario.sessionFile))
-        .map(message => message.slice(0, 400));
+      const modelEntries = await waitSessionEntry(scenario.sessionFile, entry =>
+        entry?.type === 'model_change' && entry.modelId === 'claude-mock-max'
+        && entry.source === 'command', { timeout: 25000, label: 'model command model_change' });
+      const modelChangeEntry = [...modelEntries].reverse().find(entry =>
+        entry?.type === 'model_change' && entry.modelId === 'claude-mock-max'
+        && entry.source === 'command') ?? null;
+      record.checks.modelCommandAcknowledged = modelChangeEntry !== null;
+      record.checks.modelChange = modelChangeEntry;
+      expect(modelChangeEntry !== null, 'the /model command recorded no model_change');
+
+      const afterModelUsers = userMessages(modelEntries);
+      const addedUsers = afterModelUsers.slice(beforeModelUsers.length);
+      record.checks.modelCommandUserMessages = afterModelUsers.map(message => message.slice(0, 400));
+      record.checks.modelCommandAddedUserMessages = addedUsers.map(message => message.slice(0, 400));
+      const modelNotRewritten = addedUsers.every(message => message === '/model claude-mock-max');
+      record.checks.modelNotRewritten = modelNotRewritten;
+      expect(modelNotRewritten,
+        `the /model command was rewritten into a user message: ${JSON.stringify(addedUsers)}`);
 
       const rewritten = firstUsers.some(message =>
         message.includes('The user explicitly invoked the "ulw-plan" skill')
         && message.includes('계획 잡아줘 데모'));
       const secondUnchanged = secondUsers.some(message => message === '두 번째 메시지');
-      const modelNotRewritten = !record.checks.modelCommandUserMessages.some(message => message.includes('/skill:ulw-plan /model'));
       record.checks.rewritten = rewritten;
       record.checks.secondUnchanged = secondUnchanged;
-      record.checks.modelNotRewritten = modelNotRewritten;
 
-      const ok = editor && rewritten && secondUnchanged && modelNotRewritten;
+      const ok = editor && rewritten && secondUnchanged && modelNotRewritten
+        && record.checks.modelCommandAcknowledged === true;
       return {
         ok,
         reason: ok ? null : (editor ? 'the sent user message was not rewritten; see checks'

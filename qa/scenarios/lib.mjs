@@ -251,10 +251,13 @@ export function waitFile(file, predicate, { timeout = 30000, label = file } = {}
   return new Promise((resolve, reject) => {
     let settled = false;
     let watcher = null;
+    const rechecks = new Set();
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      for (const recheck of rechecks) clearTimeout(recheck);
+      rechecks.clear();
       try { watcher?.close(); } catch { /* closed */ }
       if (error) reject(error);
       else resolve(value);
@@ -267,9 +270,23 @@ export function waitFile(file, predicate, { timeout = 30000, label = file } = {}
       }
     };
     const timer = setTimeout(() => finish(new Error(`timeout waiting for ${label}`)), timeout);
+    // A session line is appended in one write, but Windows can deliver the
+    // directory event while the line is still incomplete; a single delayed
+    // re-read on each event closes that window without polling.
+    const checkSoon = () => {
+      const recheck = setTimeout(() => {
+        rechecks.delete(recheck);
+        check();
+      }, 100);
+      recheck.unref?.();
+      rechecks.add(recheck);
+    };
     try {
       watcher = watch(dirname(file), { persistent: false }, (_event, filename) => {
-        if (!filename || String(filename).toLowerCase() === file.split(/[\\/]/).at(-1).toLowerCase()) check();
+        if (!filename || String(filename).toLowerCase() === file.split(/[\\/]/).at(-1).toLowerCase()) {
+          check();
+          if (!settled) checkSoon();
+        }
       });
     } catch {
       // The file's directory may not exist yet; the timeout still bounds the wait.
@@ -288,6 +305,20 @@ export function waitFooterModel(pane, modelId, { timeout = 20000 } = {}) {
 export async function waitSessionEntry(file, predicate, options = {}) {
   await waitFile(file, () => sessionEntries(file).some(predicate), options);
   return sessionEntries(file);
+}
+
+/**
+ * Restart gate: wait for the new CLI's own `pi-rules.scan` startup entry in the
+ * restart session file, then for the painted editor/footer. Sending `/agent`
+ * before this event types into the shell and silently loses the command.
+ */
+export async function waitRestartReady(pane, file, { timeout = 30000 } = {}) {
+  await waitFile(file, () => sessionEntries(file).some(entry =>
+    entry?.type === 'custom' && entry.customType === 'pi-rules.scan'), {
+    timeout,
+    label: `restart startup scan in ${file}`,
+  });
+  await waitReady(pane, timeout);
 }
 
 const AGENT_DISPLAY = Object.freeze({
@@ -362,7 +393,7 @@ export async function waitReady(pane, timeout = 45000) {
   debug(`ready: waiting for footer (${pane})`);
   await waitRegex(pane, '\\(qa-mock\\)|Settings: settings.json|0/200K|▌ ', { timeout });
   debug('ready: footer seen');
-  await waitRegex(pane, 'Tab 전환 UI를 불러오지 못했어요|▌ ', { timeout: 10000 }).catch(() => null);
+  await waitRegex(pane, 'Tab 전환 UI를 불러오지 못했어요|▌ ', { timeout: 3000 }).catch(() => null);
   debug('ready: extension session_start paint seen or timed out');
 }
 
@@ -591,6 +622,9 @@ export async function runTuiScenario({
   name,
   evidenceName,
   scenarioOptions = {},
+  scenario: providedScenario,
+  pane: providedPane,
+  start = true,
   mockOptions = {},
   mock: providedMock,
   label,
@@ -599,7 +633,7 @@ export async function runTuiScenario({
   body,
 }) {
   const mock = providedMock ?? await startMock({ captureBody: true, ...mockOptions });
-  const scenario = createTuiScenario({ name, mockUrl: mock.baseUrl, ...scenarioOptions });
+  const scenario = providedScenario ?? createTuiScenario({ name, mockUrl: mock.baseUrl, ...scenarioOptions });
   try {
     return await withTuiScenario({
       name,
@@ -609,6 +643,8 @@ export async function runTuiScenario({
       mock,
       label,
       keepSandbox,
+      pane: providedPane,
+      start,
       body: async (pane, record) => {
         await waitReady(pane);
         const readyText = readRecent(pane);
@@ -664,10 +700,12 @@ export async function withTuiScenario({
   mock,
   body,
   label,
+  pane: providedPane,
+  start = true,
   closePaneAfter = true,
   keepSandbox = false,
 }) {
-  const pane = createPane(scenario.workDir, label ?? `PiOMO ${name}`);
+  const pane = providedPane ?? createPane(scenario.workDir, label ?? `PiOMO ${name}`);
   const frames = [];
   const record = {
     scenario: name,
@@ -683,7 +721,7 @@ export async function withTuiScenario({
   };
   let error = null;
   try {
-    run(pane, scenario.command);
+    if (start) run(pane, scenario.command);
     record.result = await body(pane, record);
     record.ok = record.result?.ok === true;
     if (!record.ok) throw new Error(record.result?.error ?? record.result?.reason ?? 'scenario body did not report ok');
@@ -696,6 +734,12 @@ export async function withTuiScenario({
     record.endedAt = new Date().toISOString();
     record.sessionEntries = sessionEntries(scenario.sessionFile);
     try { record.finalFrame = paneText(pane); } catch { record.finalFrame = ''; }
+    // Kill the CLI tree BEFORE the pane teardown: the plugin's LSP daemon is a
+    // detached child that can outlive the pane and keep the temp cwd locked.
+    const processesBeforeClose = processesFor(scenario.sandbox.stateDir);
+    for (const entry of processesBeforeClose) {
+      if (typeof entry.ProcessId === 'number') killTree(entry.ProcessId);
+    }
     if (closePaneAfter) {
       try { closePane(pane); } catch { /* already gone */ }
     }
@@ -703,6 +747,7 @@ export async function withTuiScenario({
     for (const entry of leftovers) {
       if (typeof entry.ProcessId === 'number') killTree(entry.ProcessId);
     }
+    record.processesBeforeClose = processesBeforeClose;
     record.processesAfterClose = leftovers;
     record.processesAfterKill = processesFor(scenario.sandbox.stateDir);
     if (keepSandbox) {

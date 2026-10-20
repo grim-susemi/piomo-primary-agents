@@ -4,13 +4,14 @@
 // 5-tool turn has no blocked call. Both runs use fresh temp agent dirs/homes
 // and the same cwd, so first-run state (MCP discovery, onboarding) is equal.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  createTuiScenario, expect, isTitleRequest, normalizeVolatile, runTuiScenario, sendKeys,
-  sendText, sessionEntries, sha256, startMock, systemPromptOf, textOfMessage, toolResults,
-  waitFile, waitOutput,
+  createPane, createTuiScenario, expect, isTitleRequest, normalizeVolatile, run as runCommand,
+  runTuiScenario, sendKeys, sendText, sessionEntries, sha256, startMock, systemPromptOf, textOfMessage,
+  toolResults, waitFile, waitOutput,
 } from './lib.mjs';
 
 const TOOLS = [
@@ -27,6 +28,85 @@ const BLOCK_MARKERS = [
   '이 도구는 이 에이전트에게 막혀 있어요',
 ];
 
+/** Close the mock with a hard bound; a leaked keep-alive socket must not wedge the runner. */
+async function closeMockBounded(mock, ms = 5000) {
+  let timer;
+  try {
+    await Promise.race([
+      mock.close().catch(() => {}),
+      new Promise((resolve) => { timer = setTimeout(resolve, ms); timer.unref?.(); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Remove a tree, retrying while a dying daemon releases its handle. */
+async function removeTree(path, { timeout = 10000 } = {}) {
+  const started = Date.now();
+  let lastError = null;
+  for (;;) {
+    try {
+      rmSync(path, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+    } catch (caught) {
+      lastError = caught;
+    }
+    if (!existsSync(path)) return { removed: true, error: null };
+    if (Date.now() - started >= timeout) {
+      return { removed: false, error: String(lastError?.message ?? lastError ?? 'path still exists') };
+    }
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+}
+
+/**
+ * Delete the package sandbox in a child process while the no-package run
+ * starts. The package tree is ~9,500 runtime files; deleting it synchronously
+ * after the second run would push the whole runner past the 60s bound.
+ */
+function startTreeRemoval(path, { timeout = 20000 } = {}) {
+  const script = [
+    "const fs = require('node:fs');",
+    `const p = ${JSON.stringify(path)};`,
+    `const end = Date.now() + ${timeout};`,
+    'function go() {',
+    '  try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 }); } catch {}',
+    '  if (!fs.existsSync(p)) process.exit(0);',
+    '  if (Date.now() > end) process.exit(1);',
+    '  setTimeout(go, 250);',
+    '}',
+    'go();',
+  ].join('\n');
+  const child = spawn(process.execPath, ['-e', script], { windowsHide: true, stdio: 'ignore' });
+  return new Promise((resolve) => {
+    child.once('error', () => resolve({ removed: !existsSync(path), exitCode: null }));
+    child.once('exit', code => resolve({ removed: !existsSync(path), exitCode: code }));
+  });
+}
+
+/** Remove both sandboxes and the shared cwd; report whether each tree is actually gone. */
+async function cleanupTrees({ first, second, sharedCwd, packageRemoval }) {
+  const results = [];
+  const targets = [
+    { label: 'package sandbox', path: first?.sandbox.stateDir, preRemoval: packageRemoval },
+    { label: 'nopackage sandbox', path: second?.sandbox.stateDir },
+    { label: 'shared cwd', path: sharedCwd },
+  ];
+  for (const target of targets) {
+    if (!target.path) continue;
+    let removal = target.preRemoval;
+    if (!removal?.removed) removal = await removeTree(target.path);
+    results.push({
+      label: target.label,
+      path: target.path,
+      removed: removal.removed === true || !existsSync(target.path),
+      error: removal.removed === true || !existsSync(target.path) ? null
+        : String(removal.error ?? `removal child exit ${removal.exitCode}`),
+    });
+  }
+  return results;
+}
+
 // The plugin registers context7 as a lazy MCP server. Its instructions land only
 // after the catalog cache exists; waiting on that event keeps the package and
 // package-removed runs at the same MCP state instead of racing the first turn.
@@ -40,6 +120,7 @@ async function waitMcpCache(scenario) {
 }
 
 export async function run({ out }) {
+  const runStartedAt = Date.now();
   const state = { packagePrompt: null, noPackagePrompt: null, run: 'package', prompts: [] };
   const recordPrompt = (label, body) => {
     const prompt = systemPromptOf(body);
@@ -78,6 +159,7 @@ export async function run({ out }) {
   let sharedCwd;
   let first;
   let second;
+  let packageRemoval = null;
   try {
     sharedCwd = mkdtempSync(join(tmpdir(), 'piomo-s6b-cwd-'));
     first = createTuiScenario({
@@ -95,22 +177,38 @@ export async function run({ out }) {
     });
     writeFileSync(join(sharedCwd, 'seed.txt'), 'seed\n', 'utf8');
 
+    // Start both CLIs before either body so the two ~25s TUI startups overlap.
+    // The scripted tool turns still run sequentially against the shared cwd.
+    const packagePane = createPane(first.workDir, 'PiOMO S6b Sisyphus (package)');
+    const noPackagePane = createPane(sharedCwd, 'PiOMO S6b Sisyphus (no package)');
+    runCommand(packagePane, first.command);
+    runCommand(noPackagePane, second.command);
+
     const packageRun = await runTuiScenario({
       out,
       name: 'S6b',
       evidenceName: 'task-11-piomo-primary-agents-S6b',
       mock,
-      scenarioOptions: { sandbox: first.sandbox, workDir: sharedCwd },
+      scenario: first,
+      pane: packagePane,
+      start: false,
       label: 'PiOMO S6b Sisyphus (package)',
       keepSandbox: true,
       body: async (pane, record, scenario) => {
+        const mark = (label) => {
+          record.checks.timings = { ...(record.checks.timings ?? {}), [label]: Date.now() - Date.parse(record.startedAt) };
+        };
+        mark('bodyStart');
         await waitMcpCache(scenario);
+        mark('mcpCache');
         sendText(pane, 'S6B warmup');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B warmup done', { timeout: 30000 });
+        mark('warmupDone');
         sendText(pane, 'S6B prompt');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B done', { timeout: 45000 });
+        mark('done');
         const results = toolResults(sessionEntries(scenario.sessionFile));
         record.checks.toolResults = results;
         record.checks.blocked = results.filter(result =>
@@ -129,27 +227,34 @@ export async function run({ out }) {
     });
 
     state.run = 'nopackage';
+    // The package sandbox is not used by the no-package run; delete it in a
+    // child process while that run starts so its ~9.5k runtime files do not
+    // add their removal time to the runner's wall clock.
+    packageRemoval = startTreeRemoval(first.sandbox.stateDir);
     const noPackage = await runTuiScenario({
       out,
       name: 'S6b-nopackage',
       evidenceName: 'task-11-piomo-primary-agents-S6b-nopackage',
       mock,
-      scenarioOptions: {
-        sandbox: second.sandbox,
-        workDir: sharedCwd,
-        packages: [],
-        pluginPath: first.pluginPath,
-        sessionName: 'nopackage',
-      },
+      scenario: second,
+      pane: noPackagePane,
+      start: false,
       label: 'PiOMO S6b Sisyphus (no package)',
       body: async (pane, record, scenario) => {
+        const mark = (label) => {
+          record.checks.timings = { ...(record.checks.timings ?? {}), [label]: Date.now() - Date.parse(record.startedAt) };
+        };
+        mark('bodyStart');
         await waitMcpCache(scenario);
+        mark('mcpCache');
         sendText(pane, 'S6B warmup');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B warmup done', { timeout: 30000 });
+        mark('warmupDone');
         sendText(pane, 'S6B prompt');
         sendKeys(pane, 'enter');
         await waitOutput(pane, 'S6B done', { timeout: 30000 });
+        mark('done');
         return { ok: true };
       },
     });
@@ -177,9 +282,14 @@ export async function run({ out }) {
     for (let index = 0; index < Math.max(normalizedA.length, normalizedB.length); index += 1) {
       if (normalizedA[index] !== normalizedB[index]) { firstDiff = index; break; }
     }
+    // Clean both sandboxes and the shared cwd BEFORE writing the final evidence
+    // so the evidence carries the removal proof and no process handle can keep
+    // the 9k-file tree alive after the claim.
+    const cleanup = await cleanupTrees({ first, second, sharedCwd, packageRemoval });
+    const allRemoved = cleanup.every(entry => entry.removed === true);
     const { writeEvidence } = await import('./lib.mjs');
     writeEvidence(out, 'task-11-piomo-primary-agents-S6b-crossrun', {
-      ok: hashA === hashB,
+      ok: allRemoved && hashA === hashB,
       scenario: 'S6b cross-run',
       startedAt: new Date().toISOString(),
       endedAt: new Date().toISOString(),
@@ -187,6 +297,7 @@ export async function run({ out }) {
       home: first.sandbox.home,
       sessionFile: first.sessionFile,
       command: first.command,
+      cleanup,
       checks: {
         packageRun,
         noPackageRun: noPackage,
@@ -211,19 +322,24 @@ export async function run({ out }) {
     };
     writeEvidence(out, 'task-11-piomo-primary-agents-S6b', {
       ...packageRun,
-      ok: hashA === hashB,
-      error: hashA === hashB ? undefined : `Sisyphus prompts differ: ${hashA} != ${hashB}`,
-      checks: { ...packageRun.checks, comparison },
+      ok: allRemoved && hashA === hashB,
+      error: hashA === hashB ? (allRemoved ? undefined : 'cleanup left a temp tree') : `Sisyphus prompts differ: ${hashA} != ${hashB}`,
+      checks: { ...packageRun.checks, comparison, cleanup },
+      cleanup: { runs: cleanup, allRemoved },
+      timing: {
+        totalMs: Date.now() - runStartedAt,
+        packageRun: packageRun.checks?.timings ?? null,
+        noPackageRun: noPackage?.checks?.timings ?? null,
+      },
     });
+    expect(allRemoved, `cleanup left a temp tree: ${JSON.stringify(cleanup)}`);
     expect(hashA === hashB, `Sisyphus prompts differ: ${hashA} != ${hashB}`);
-    return { ok: true, hashA, hashB, toolResults: 5 };
+    return { ok: true, hashA, hashB, toolResults: 5, cleanup, totalMs: Date.now() - runStartedAt };
   } finally {
-    await mock.close();
-    try { first?.sandbox.cleanup(); } catch { /* removed */ }
-    try { second?.sandbox.cleanup(); } catch { /* removed */ }
-    if (sharedCwd) {
-      try { rmSync(sharedCwd, { recursive: true, force: true, maxRetries: 5 }); } catch { /* locked by a dying child */ }
-    }
+    // Idempotent safety net for the failure path; the success path already ran
+    // this before writing the evidence.
+    await cleanupTrees({ first, second, sharedCwd, packageRemoval });
+    await closeMockBounded(mock);
   }
 }
 
@@ -234,9 +350,13 @@ if (invokedDirectly) {
     console.error('usage: node qa/scenarios/s6b.mjs --out <evidence dir>');
     process.exitCode = 2;
   } else {
-    run({ out: values.out }).catch((error) => {
+    const startedAt = Date.now();
+    run({ out: values.out }).then((result) => {
+      console.log(JSON.stringify({ result, elapsedMs: Date.now() - startedAt }));
+      process.exit(0);
+    }).catch((error) => {
       console.error(error?.stack ?? error);
-      process.exitCode = 1;
+      process.exit(1);
     });
   }
 }
