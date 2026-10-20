@@ -306,17 +306,67 @@ test('held switch keeps the model pending while identity and policy switch immed
   assert.doesNotMatch(refreshed, /\(대기\)/);
 });
 
-test('a failed model switch is reported and is not shown as pending', async t => {
+test('a failed Atlas model switch keeps its existing behaviour', async t => {
   const session = makeSession(t, { holdModel: true, modelResult: false });
   await session.start('resume');
+  session.ui.calls.notify.length = 0;
 
   const result = await session.orchestration.switchTo('atlas');
 
   assert.equal(result.switched, true);
   assert.equal(result.pending, false);
   assert.equal(session.orchestration.snapshot().pending, false);
+  assert.equal(session.orchestration.current, 'atlas');
   assert.deepEqual(entryAgents(session), ['atlas']);
-  assert.match(session.ui.calls.notify.at(-1).message, /모델을 바꾸지 못했어요/);
+  assert.equal(session.ui.calls.notify.length, 1);
+  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요/);
+});
+
+test('a refused Hephaestus model switch keeps the current agent and appends nothing', async t => {
+  const session = makeSession(t, { holdModel: true, modelResult: false });
+  await session.start('resume');
+  session.ui.calls.notify.length = 0;
+
+  const result = await session.orchestration.switchTo('hephaestus');
+
+  assert.deepEqual(result, { switched: false, reason: 'model-switch-failed' });
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.orchestration.snapshot().agentId, 'sisyphus');
+  assert.equal(session.orchestration.snapshot().pending, false);
+  assert.deepEqual(entryAgents(session), [], 'a failed Hephaestus switch must not append an identity entry');
+  assert.equal(session.ctx.model.id, 'default-x', 'the runtime model stays non-GPT');
+  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.equal(session.ui.calls.notify.length, 1, 'exactly one notice');
+  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요: gpt\/gpt-lane-geeky/);
+  const prompt = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
+  });
+  assert.equal(prompt, undefined, 'no Hephaestus overlay is installed');
+});
+
+test('a throwing Hephaestus model switch keeps the current agent and appends nothing', async t => {
+  const session = makeSession(t, {
+    holdModel: true,
+    beforeModel: () => { throw new Error('auth expired'); },
+  });
+  await session.start('resume');
+  session.ui.calls.notify.length = 0;
+
+  const result = await session.orchestration.switchTo('hephaestus');
+
+  assert.deepEqual(result, { switched: false, reason: 'model-switch-failed' });
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.orchestration.snapshot().agentId, 'sisyphus');
+  assert.equal(session.orchestration.snapshot().pending, false);
+  assert.deepEqual(entryAgents(session), [], 'a failed Hephaestus switch must not append an identity entry');
+  assert.equal(session.ctx.model.id, 'default-x', 'the runtime model stays non-GPT');
+  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.equal(session.ui.calls.notify.length, 1, 'exactly one notice');
+  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요: auth expired/);
+  const prompt = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
+  });
+  assert.equal(prompt, undefined, 'no Hephaestus overlay is installed');
 });
 
 test('resume ignores memory written for an older roster revision', async t => {

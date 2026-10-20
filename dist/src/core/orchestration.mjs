@@ -493,9 +493,20 @@ export function createOrchestrator(pi, options = {}) {
     try {
       ok = await pi.setSessionModel(model);
     } catch (error) {
+      // IS-4: Hephaestus is entered only on GPT. A refused or thrown switch
+      // leaves the previous non-GPT model live, so entering would install the
+      // Hephaestus identity and overlay on a non-GPT model.
+      if (destination === 'hephaestus') {
+        notify(ctxRef, `모델을 바꾸지 못했어요: ${error.message}`, 'warning');
+        return { switched: false, reason: 'model-switch-failed' };
+      }
       notify(ctxRef, `모델을 바꾸지 못했어요: ${error.message}`, 'warning');
     }
     if (ok === false) {
+      if (destination === 'hephaestus') {
+        notify(ctxRef, `모델을 바꾸지 못했어요: ${resolved.provider}/${resolved.modelId}`, 'warning');
+        return { switched: false, reason: 'model-switch-failed' };
+      }
       notify(ctxRef, `모델을 바꾸지 못했어요: ${resolved.provider}/${resolved.modelId}`, 'warning');
     }
 
