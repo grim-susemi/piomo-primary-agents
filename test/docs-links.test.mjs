@@ -17,6 +17,7 @@ const DOCS = [
   [EXT, 'README.ko.md'],
   [EXT, 'README.md'],
   [EXT, 'docs/winforms-archive.ko.md'],
+  [EXT, 'docs/gate-adapter.ko.md'],
   [BWT, 'docs/profiles.ko.md'],
 ];
 

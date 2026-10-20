@@ -27,7 +27,7 @@ Everything else switches. A trailing dot or a time like `10:30` counts as plain 
 
 Without memory the lane default applies. Changing a pin or resetting memory on the board bumps the roster `rev`, which makes the old memory file stale.
 
-**Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. Re-planning in the same session after ulw-execute needs the gate adapter. Without it, Prometheus only shows a notice that re-planning is locked. The adapter isn't installed live yet; that happens only in the owner-authorized step (todo 16).
+**Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. Re-planning in the same session after ulw-execute needs the gate adapter. Without it, Prometheus only shows a notice that re-planning is locked. The adapter isn't installed live yet; that happens only in the owner-authorized step (todo 16). Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
 
 **Limits.**
 - Prometheus may only change `.md` files under `<cwd>/.omo/`, runs a small read/plan bash allowlist, and delegates only to read-only agents.
