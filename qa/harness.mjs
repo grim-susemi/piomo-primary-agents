@@ -33,18 +33,18 @@ export const AGENT_LANES = {
   atlas: 'daily-normal',
 };
 
-// The 5.1.38 lane shape: a lane names an ordered list of models, and each
-// model is either a string or an object with model/variant/reasoning fields.
-// P8 records the final override shape; until then this is the switcher-derived
-// lane list expressed the way the installed plugin parses it.
+// The P8 lane shape used by the contract: each rung names a model id and an
+// optional ordered provider list. Omitting `providers` lets `resolve` find the
+// single mock provider by model id, and keeps the live plugin's stricter lane
+// schema (which rejects `providers`) warning-free.
 export const SEEDED_MODEL_PROFILES = {
   'daily-normal': {
     display_name: 'QA daily normal',
     family: 'daily',
     tier: 'normal',
     models: [
-      { model: 'qa-mock/claude-mock-medium', variant: 'medium' },
-      { model: 'qa-mock/claude-mock-max', variant: 'max' },
+      { model: 'claude-mock-medium', variant: 'medium' },
+      { model: 'claude-mock-max', variant: 'max' },
     ],
   },
   'daily-heavy': {
@@ -52,7 +52,7 @@ export const SEEDED_MODEL_PROFILES = {
     family: 'daily',
     tier: 'heavy',
     models: [
-      { model: 'qa-mock/claude-mock-xhigh', variant: 'xhigh' },
+      { model: 'claude-mock-xhigh', variant: 'xhigh' },
     ],
   },
   'geeky-normal': {
@@ -60,8 +60,8 @@ export const SEEDED_MODEL_PROFILES = {
     family: 'geeky',
     tier: 'normal',
     models: [
-      { model: 'qa-mock/gpt-mock-fast', variant: 'medium' },
-      { model: 'qa-mock/gpt-mock-sol', variant: 'medium' },
+      { model: 'gpt-mock-fast', variant: 'medium' },
+      { model: 'gpt-mock-sol', variant: 'medium' },
     ],
   },
   'geeky-heavy': {
@@ -69,7 +69,7 @@ export const SEEDED_MODEL_PROFILES = {
     family: 'geeky',
     tier: 'heavy',
     models: [
-      { model: 'qa-mock/gpt-mock-astra', variant: 'high' },
+      { model: 'gpt-mock-astra', variant: 'high' },
     ],
   },
 };
@@ -183,6 +183,19 @@ function splitModel(value) {
   return [value.slice(0, slash), value.slice(slash + 1)];
 }
 
+function rungProvider(rung) {
+  if (Array.isArray(rung?.providers) && typeof rung.providers[0] === 'string') return rung.providers[0];
+  const split = splitModel(rung?.model);
+  if (split[0]) return split[0];
+  return MOCK_MODELS.some(model => model.id === rung?.model) ? PROVIDER_ID : null;
+}
+
+function rungModelId(rung) {
+  if (Array.isArray(rung?.providers) && rung.providers.length > 0) return rung.model;
+  const split = splitModel(rung?.model);
+  return split[1] ?? rung?.model;
+}
+
 export function validateLanes() {
   const resolved = [];
   for (const [laneId, lane] of Object.entries(SEEDED_MODEL_PROFILES)) {
@@ -190,7 +203,8 @@ export function validateLanes() {
       throw new Error(`lane ${laneId} has no models`);
     }
     for (const rung of lane.models) {
-      const [provider, modelId] = splitModel(rung.model);
+      const provider = rungProvider(rung);
+      const modelId = rungModelId(rung);
       if (provider !== PROVIDER_ID) throw new Error(`lane ${laneId} is not pointed at ${PROVIDER_ID}`);
       const model = MOCK_MODELS.find(candidate => candidate.id === modelId);
       if (!model) throw new Error(`lane ${laneId} names unregistered mock model ${modelId}`);
@@ -216,7 +230,8 @@ export function resolveAgentModel(agentId) {
   const lane = SEEDED_MODEL_PROFILES[laneId];
   if (!lane) throw new Error(`unknown lane ${laneId}`);
   const rung = lane.models[0];
-  const [provider, modelId] = splitModel(rung.model);
+  const provider = rungProvider(rung);
+  const modelId = rungModelId(rung);
   const model = MOCK_MODELS.find(candidate => candidate.id === modelId);
   if (!model) throw new Error(`lane ${laneId} names unregistered mock model ${modelId}`);
   return {
@@ -283,6 +298,7 @@ export function headlessArgs(sandbox, {
   prompt = 'PIOMO QA self-check',
   mockUrl,
   omoFlags = true,
+  noExtensions = true,
   extraEnv = {},
 } = {}) {
   if (!MOCK_MODELS.some(model => model.id === modelId)) {
@@ -303,7 +319,7 @@ export function headlessArgs(sandbox, {
       '-p',
       '--mode', 'text',
       '--offline',
-      '--no-extensions',
+      ...(noExtensions ? ['--no-extensions'] : []),
       '--no-skills',
       '--no-prompt-templates',
       '--no-context-files',
