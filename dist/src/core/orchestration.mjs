@@ -603,7 +603,13 @@ export function createOrchestrator(pi, options = {}) {
       return;
     }
 
-    if (current === 'prometheus' && !text.startsWith('/') && mirror.needsPlanRewrite(sessionKey())) {
+    if (
+      current === 'prometheus'
+      && text.length > 0
+      && !text.startsWith('/')
+      && !text.startsWith('!')
+      && mirror.needsPlanRewrite(sessionKey())
+    ) {
       mirror.planRequest(sessionKey());
       const rewritten = `/skill:ulw-plan ${text}`;
       // The host expands the submitted text from the editor's live content, so

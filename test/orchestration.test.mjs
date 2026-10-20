@@ -573,6 +573,30 @@ test('the first Prometheus plain request is rewritten once, then left alone', as
   assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'second message');
 });
 
+test('an empty Prometheus submission reaches the host unchanged and keeps the rewrite pending', async t => {
+  const session = makeSession(t, { branch: resumedBranch('prometheus') });
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '');
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+
+  await session.ui.editor.onSubmit('first real request');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan first real request');
+});
+
+test('a bang Prometheus submission reaches the host unchanged and keeps the rewrite pending', async t => {
+  const session = makeSession(t, { branch: resumedBranch('prometheus') });
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('!git status');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '!git status');
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+
+  await session.ui.editor.onSubmit('first real request');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan first real request');
+});
+
 test('the first Prometheus request is rewritten after an /agent switch', async t => {
   const session = makeSession(t, { branch: resumedBranch('sisyphus') });
   await session.start('resume');
