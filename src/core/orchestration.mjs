@@ -24,7 +24,6 @@ import {
 } from '../../contract/schema.mjs';
 import { MARKER_BEGIN } from '../gate-adapter/adapter.mjs';
 import { installUi } from '../ui/install.mjs';
-import { loadEditorHost } from '../host/lazy.mjs';
 import { isPrimaryMain } from './gate.mjs';
 import {
   createGateMirror, INTERACTIVE_SOURCE, isPlanRequest, isUlwExecute, isUlwExecuteSkillPath,
@@ -144,6 +143,8 @@ export function registryAdapter(registry) {
   };
 }
 
+const SUBMIT_WRAPPED = Symbol('piomo-submit-wrapper');
+
 function createSubmitWrapBase(Base, handler) {
   return class SubmitWrappedEditor extends Base {
     constructor(...args) {
@@ -155,9 +156,17 @@ function createSubmitWrapBase(Base, handler) {
         enumerable: true,
         get: () => {
           if (typeof hostSubmit !== 'function') return hostSubmit;
+          // The host's composer-activity observer reads this getter, installs a
+          // temporary wrapper and restores the value it read in a finally block.
+          // Returning a fresh wrapper for our own wrapper would grow a chain on
+          // every keystroke and, because the wrapper used to read the mutable
+          // hostSubmit, recurse into itself on submit.
+          if (hostSubmit[SUBMIT_WRAPPED] === true) return hostSubmit;
           if (wrapper === null || wrapper.hostSubmit !== hostSubmit) {
-            wrapper = (text, details) => handler(this, hostSubmit, text, details);
-            wrapper.hostSubmit = hostSubmit;
+            const captured = hostSubmit;
+            wrapper = (text, details) => handler(this, captured, text, details);
+            wrapper[SUBMIT_WRAPPED] = true;
+            wrapper.hostSubmit = captured;
           }
           return wrapper;
         },
@@ -172,7 +181,7 @@ function createSubmitWrapBase(Base, handler) {
 
 /**
  * @param {object} pi extension API
- * @param {{overlays?: Record<string,string>, mirror?: object, loadHost?: () => Promise<{EditorBase: Function}>, EditorBase?: Function}} [options]
+ * @param {{overlays?: Record<string,string>, mirror?: object, EditorBase?: Function}} [options]
  */
 export function createOrchestrator(pi, options = {}) {
   if (!pi || typeof pi.on !== 'function') {
@@ -181,7 +190,6 @@ export function createOrchestrator(pi, options = {}) {
 
   const overlays = options.overlays ?? loadOverlays();
   const mirror = options.mirror ?? createGateMirror();
-  const loadHost = options.loadHost ?? loadEditorHost;
   const injectedBase = options.EditorBase;
 
   let active = false;
@@ -202,6 +210,7 @@ export function createOrchestrator(pi, options = {}) {
   let chain = Promise.resolve();
   let scaffoldPath = null;
   const nonGptNotices = new Set();
+  const ownEntryIds = new Set();
   const pendingThinking = new Map();
 
   function notify(ctx, message, type = 'info') {
@@ -323,7 +332,13 @@ export function createOrchestrator(pi, options = {}) {
     const branch = getBranch();
     const result = reconcileMemory(branch, cursor);
     cursor = result.cursor;
-    for (const update of result.updates) writeMemoryUpdate(update);
+    for (const update of result.updates) {
+      // A switch writes its own model and thinking entries before the identity
+      // entry. Those entries are ours, not the owner teaching an agent; learning
+      // them would attribute the new agent's model to the old one.
+      if (ownEntryIds.has(update.entryId)) continue;
+      writeMemoryUpdate(update);
+    }
   }
 
   function refreshContext() {
@@ -385,6 +400,24 @@ export function createOrchestrator(pi, options = {}) {
     notify(ctxRef, ADAPTER_MISSING_NOTICE, 'warning');
   }
 
+  /**
+   * The host records `setSessionThinkingLevel` as an explicit thinking pick, so
+   * its entry is indistinguishable from the owner's Shift+Tab after the fact.
+   * Mark the entries this extension created and never learn them as memory.
+   */
+  function setSessionThinking(level) {
+    if (typeof level !== 'string' || level.length === 0) return;
+    const before = getBranch().length;
+    pi.setSessionThinkingLevel(level);
+    const branch = getBranch();
+    for (let index = before; index < branch.length; index += 1) {
+      const entry = branch[index];
+      if (entry?.type === 'thinking_level_change' && typeof entry.id === 'string') {
+        ownEntryIds.add(entry.id);
+      }
+    }
+  }
+
   async function applySessionModel(resolved, ctx) {
     const model = findModel(ctx, resolved.provider, resolved.modelId);
     if (!model) {
@@ -402,7 +435,7 @@ export function createOrchestrator(pi, options = {}) {
       notify(ctx, `모델을 바꾸지 못했어요: ${resolved.provider}/${resolved.modelId}`, 'warning');
       return false;
     }
-    if (typeof resolved.thinking === 'string') pi.setSessionThinkingLevel(resolved.thinking);
+    if (typeof resolved.thinking === 'string') setSessionThinking(resolved.thinking);
     return true;
   }
 
@@ -475,7 +508,7 @@ export function createOrchestrator(pi, options = {}) {
       ? { provider: resolved.provider, modelId: resolved.modelId, fromIndex: 0 }
       : null;
 
-    if (typeof resolved.thinking === 'string') pi.setSessionThinkingLevel(resolved.thinking);
+    if (typeof resolved.thinking === 'string') setSessionThinking(resolved.thinking);
 
     appendIdentity(pi, destination);
     current = destination;
@@ -509,16 +542,7 @@ export function createOrchestrator(pi, options = {}) {
   }
 
   async function installSessionUi(ctx) {
-    let Base = injectedBase ?? null;
-    if (!Base) {
-      try {
-        const host = await loadHost();
-        Base = host?.EditorBase ?? null;
-      } catch (error) {
-        notify(ctx, `Tab 전환 UI를 불러오지 못했어요: ${error.message}`, 'warning');
-        Base = null;
-      }
-    }
+    const Base = injectedBase ?? null;
 
     const SubmitBase = typeof Base === 'function'
       ? createSubmitWrapBase(Base, (editor, hostSubmit, text, details) => handleSubmit(editor, hostSubmit, text, details, ctx))
@@ -581,7 +605,12 @@ export function createOrchestrator(pi, options = {}) {
 
     if (current === 'prometheus' && !text.startsWith('/') && mirror.needsPlanRewrite(sessionKey())) {
       mirror.planRequest(sessionKey());
-      hostSubmit?.(`/skill:ulw-plan ${text}`, details);
+      const rewritten = `/skill:ulw-plan ${text}`;
+      // The host expands the submitted text from the editor's live content, so
+      // update the editor before handing the rewritten command to the host.
+      editor?.setText?.(rewritten);
+      hostSubmit?.(rewritten, details);
+      editor?.setText?.('');
       return;
     }
 
@@ -599,6 +628,7 @@ export function createOrchestrator(pi, options = {}) {
     adapterPresent = detectAdapter(ctx);
     adapterNoticeSent = false;
     scaffoldPath = detectScaffoldPath(ctx);
+    ownEntryIds.clear();
 
     refreshContext();
     laneOverrides = homeDir ? readLaneOverrides(homeDir).overrides : {};
@@ -661,6 +691,10 @@ export function createOrchestrator(pi, options = {}) {
       completePending();
       reconcileMemoryNow();
     }
+    // Sisyphus is the host's own agent today. Returning a systemPrompt - even
+    // the untouched base - marks it modified and drops the host's MCP
+    // post-processing. Only the three overlay agents replace the prompt.
+    if (current === 'sisyphus') return undefined;
     return { systemPrompt: applyOverlay(event?.systemPrompt ?? '', current, overlays) };
   }
 

@@ -181,6 +181,13 @@ function makeSession(t, options = {}) {
       log.push({ kind: 'thinking' });
       calls.push({ kind: 'thinking', level });
       ctx.thinkingLevel = level;
+      // The host records an extension call as an explicit pick (no trigger).
+      branch.push({
+        type: 'thinking_level_change',
+        id: `thinking-${branch.length}`,
+        thinkingLevel: level,
+        thinkingSelection: { level, source: 'explicit' },
+      });
     },
     appendEntry(type, data) {
       log.push({ kind: 'entry' });
@@ -242,6 +249,31 @@ test('switch order is model -> thinking -> entry -> label and ctx owns no switch
   assert.deepEqual(session.log.map(item => item.kind), ['model', 'thinking', 'entry', 'label']);
   assert.deepEqual(entryAgents(session), ['atlas']);
   assert.equal(session.orchestration.current, 'atlas');
+});
+
+test('submit wrap survives the host restoring a wrapper (no self-recursion)', async t => {
+  const session = makeSession(t);
+  await session.start('resume');
+  const editor = session.ui.editor;
+  assert.ok(editor, 'custom editor installed');
+
+  const own = editor.onSubmit;
+  editor.onSubmit = own;
+  assert.equal(editor.onSubmit, own, 'restoring our wrapper must not grow a new one');
+
+  // Replays the host composer observer: read the callback, install a temporary
+  // wrapper, submit through the editor, then restore what was read.
+  for (let index = 0; index < 5; index += 1) {
+    const previous = editor.onSubmit;
+    editor.onSubmit = (...args) => previous?.(...args);
+    editor.onSubmit('hello there', { rawText: 'hello there' });
+    editor.onSubmit = previous;
+  }
+
+  assert.equal(session.ui.calls.hostSubmit.length, 5);
+  assert.deepEqual(session.ui.calls.hostSubmit.at(-1), {
+    text: 'hello there', details: { rawText: 'hello there' },
+  });
 });
 
 test('held switch keeps the model pending while identity and policy switch immediately', async t => {
@@ -339,6 +371,57 @@ test('model_select only stages: no memory file until a reconciliation event', as
   session.branch.push({ type: 'model_change', id: 'm1', source: 'command', provider: 'sub', modelId: 'learned' });
   await session.fire('before_agent_start', { type: 'before_agent_start', systemPrompt: 'BASE', preview: false });
   assert.ok(existsSync(file));
+});
+
+test('extension switch entries are never learned as agent memory', async t => {
+  // A fresh session seeds Sisyphus (model_change + thinking) before the first
+  // switch. Those entries carry the host's "explicit" thinking selection, so
+  // only the extension's own-entry bookkeeping keeps them out of memory.
+  const session = makeSession(t, { branch: initialBranch() });
+  await session.start('startup');
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
+
+  await session.orchestration.switchTo('hephaestus');
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
+    'the switch attributed its own thinking entry to Sisyphus');
+  await session.orchestration.switchTo('prometheus');
+  await session.orchestration.switchTo('atlas');
+  await session.orchestration.switchTo('sisyphus');
+
+  for (const agentId of ['sisyphus', 'hephaestus', 'prometheus', 'atlas']) {
+    assert.equal(existsSync(memoryPath(session.sandbox.agentDir, agentId)), false,
+      `${agentId} memory must not be created by a switch`);
+  }
+});
+
+test('a non-GPT /model pick on Hephaestus never touches Sisyphus memory', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  await session.start('startup');
+  await session.orchestration.switchTo('hephaestus');
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
+    'the Hephaestus switch created Sisyphus memory before any /model pick');
+
+  session.branch.push({
+    type: 'model_change', id: 'gpt-pick', source: 'command', provider: 'gpt', modelId: 'gpt-lane-geeky',
+  });
+  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
+
+  const hephaestusFile = memoryPath(session.sandbox.agentDir, 'hephaestus');
+  assert.equal(JSON.parse(readFileSync(hephaestusFile, 'utf8')).model.modelId, 'gpt-lane-geeky');
+  const before = readFileSync(hephaestusFile, 'utf8');
+
+  session.branch.push({
+    type: 'model_change', id: 'non-gpt-pick', source: 'command', provider: 'sub', modelId: 'lane-daily',
+  });
+  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
+
+  assert.equal(readFileSync(hephaestusFile, 'utf8'), before, 'Hephaestus memory changed on a non-GPT pick');
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
+    'Sisyphus memory was created by a Hephaestus pick');
+  assert.match(session.ui.calls.notify.at(-1).message, /GPT 모델만 기억해요/);
+
+  await session.orchestration.switchTo('sisyphus');
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
 });
 
 test('resume restores the branch identity', async t => {
@@ -474,16 +557,28 @@ test('Prometheus rewrite triggers on /ulw-execute, a read of the skill and typed
 test('extension-originated ulw-execute never enables the rewrite', async t => {
   const session = makeSession(t, { branch: resumedBranch('prometheus') });
   await session.start('resume');
+  // Consume the first-message rewrite so only the execute can enable it now.
+  await session.fire('input', { type: 'input', text: '/skill:ulw-plan first', source: 'interactive' });
   await session.fire('input', { type: 'input', text: '/ulw-execute go', source: 'extension' });
   await session.ui.editor.onSubmit('plain request');
   assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'plain request');
 });
 
-test('no ulw-execute means no rewrite', async t => {
+test('the first Prometheus plain request is rewritten once, then left alone', async t => {
   const session = makeSession(t, { branch: resumedBranch('prometheus') });
   await session.start('resume');
   await session.ui.editor.onSubmit('plain request');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'plain request');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan plain request');
+  await session.ui.editor.onSubmit('second message');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'second message');
+});
+
+test('the first Prometheus request is rewritten after an /agent switch', async t => {
+  const session = makeSession(t, { branch: resumedBranch('sisyphus') });
+  await session.start('resume');
+  await session.commands.get('agent').handler('prometheus', session.ctx);
+  await session.ui.editor.onSubmit('계획 잡아줘 데모');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan 계획 잡아줘 데모');
 });
 
 test('adapter-missing notice appears only after ulw-execute and only without the marker', async t => {
@@ -611,6 +706,21 @@ test('before_agent_start appends the overlay and previews stay pure', async t =>
   assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'prometheus')), before);
 });
 
+test('Sisyphus before_agent_start leaves the host prompt untouched', async t => {
+  const session = makeSession(t, { branch: resumedBranch('sisyphus') });
+  await session.start('resume');
+
+  const result = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
+  });
+  assert.equal(result, undefined, 'returning the base would drop the host MCP post-processing');
+
+  const preview = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: true,
+  });
+  assert.equal(preview, undefined);
+});
+
 test('rapid switches serialize through one chain', async t => {
   const session = makeSession(t, {
     beforeModel: () => new Promise(resolve => setImmediate(resolve)),
@@ -637,9 +747,9 @@ test('gate mirror records only interactive plan/execute and forgets on shutdown'
   assert.equal(isUlwExecuteSkillPath('C:/pkg/skills/ulw-execute/SKILL.md.bak'), false);
 
   const mirror = createGateMirror();
-  assert.equal(mirror.needsPlanRewrite('s'), false);
+  assert.equal(mirror.needsPlanRewrite('s'), true);
   mirror.observeInput('s', '/skill:ulw-execute x', 'extension');
-  assert.equal(mirror.needsPlanRewrite('s'), false);
+  assert.equal(mirror.needsPlanRewrite('s'), true);
   mirror.observeInput('s', '/skill:ulw-execute x', 'interactive');
   assert.equal(mirror.needsPlanRewrite('s'), true);
   mirror.observeInput('s', '/skill:ulw-plan p', 'interactive');

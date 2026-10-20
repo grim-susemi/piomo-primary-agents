@@ -31,6 +31,14 @@ function snapshot(directory) {
   return files;
 }
 
+const ENTRY_STUB = [
+  'import { EditorBase } from "./src/host/editor-host.mjs";',
+  'import { createPrimaryAgentsExtension } from "./src/index.mjs";',
+  '',
+  'export default createPrimaryAgentsExtension({ EditorBase });',
+  '',
+].join('\n');
+
 test('package shape matches the pi package contract', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.name, 'piomo-primary-agents');
@@ -62,7 +70,12 @@ test('src/index.mjs exports a factory that registers the orchestration handlers'
 });
 
 test('dist/extension.js is the committed package entry stub', () => {
-  assert.equal(read('dist/extension.js'), 'export { default } from "./src/index.mjs";\n');
+  assert.equal(read('dist/extension.js'), ENTRY_STUB);
+  // The loader compiles this entry with jiti, so only a STATIC import here
+  // receives the @earendil-works/pi-coding-agent alias.
+  assert.match(read('dist/extension.js'),
+    /^import \{ EditorBase \} from "\.\/src\/host\/editor-host\.mjs";$/m);
+  assert.doesNotMatch(read('src/index.mjs'), /from ['"]@earendil-works\/pi-coding-agent/);
 });
 
 test('dist/ equals a fresh build of src/, contract/ and prompts/', () => {

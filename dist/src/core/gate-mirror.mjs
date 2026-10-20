@@ -88,10 +88,13 @@ export function createGateMirror() {
       return sequence;
     },
 
-    /** True only after an ulw-execute that no later plan request has cleared. */
+    /**
+     * True when this session has no plan request yet (the first Prometheus
+     * message) or when an ulw-execute has not been followed by a plan request.
+     */
     needsPlanRewrite(sessionId) {
       const state = stateFor(sessionId);
-      return state.execute > 0 && state.plan < state.execute;
+      return state.plan === 0 || state.execute > state.plan;
     },
 
     hasUlwExecute(sessionId) {

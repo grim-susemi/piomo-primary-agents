@@ -5,7 +5,16 @@ import { parseArgs } from 'node:util';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SOURCE_DIRS = ['src', 'contract', 'prompts'];
-const EXTENSION_STUB = 'export { default } from "./src/index.mjs";\n';
+// The entry is the one module the senpi loader compiles first, so its static
+// imports are the only place the alias for @earendil-works/pi-coding-agent
+// reaches the host editor. A dynamic import deeper in the graph stays native.
+const EXTENSION_STUB = [
+  'import { EditorBase } from "./src/host/editor-host.mjs";',
+  'import { createPrimaryAgentsExtension } from "./src/index.mjs";',
+  '',
+  'export default createPrimaryAgentsExtension({ EditorBase });',
+  '',
+].join('\n');
 
 const { values } = parseArgs({
   options: {
