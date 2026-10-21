@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MARKER_BEGIN, MARKER_END } from "../src/gate-adapter/adapter.mjs";
+import { MARKER_BEGIN, MARKER_END, hasUnlockedReviewPolicy } from "../src/gate-adapter/adapter.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(ROOT, "scripts", "gate-adapter.mjs");
@@ -24,6 +24,7 @@ const FIXTURES = {
     ?? "C:/Users/USER/.omo-stable-500/staging/upgrade-5.1.38/pristine-omo-ai/plugin/extensions/omo-task.js",
 };
 const P11_ADAPTED_SHA256 = "2b559bb11f0285072722cffbb7f322756c81aec867f6fb4a683278f075d7f783";
+const UNLOCKED_SHA256 = "1149550465cbfde272891e27d78087ecb8003c0a3dbf32bef7aaa8dbc237cef0";
 const COORDINATION_BASELINE_SHA256 = "36d98c7ab3cc07349b60adc8bc7365a85e7573653ebab574d0114c2571d53dcd";
 
 // Independent copy of the P11 anchor regex. It is deliberately not imported
@@ -124,14 +125,25 @@ test("P11 fixtures: one anchor each; both real bundles are coordination-adapted"
   }
   const stableHash = shaFile(FIXTURES.stable);
   const globalHash = shaFile(FIXTURES.global);
-  assert.equal(stableHash, P11_ADAPTED_SHA256, "stable-500 target drifted from P11");
-  assert.equal(globalHash, P11_ADAPTED_SHA256, "global omo-ai target drifted from P11");
+  assert.equal(stableHash, UNLOCKED_SHA256, "stable-500 target drifted from recorded unlock");
+  assert.equal(globalHash, UNLOCKED_SHA256, "global omo-ai target drifted from recorded unlock");
   assert.equal(shaFile(FIXTURES.stock), COORDINATION_BASELINE_SHA256, "stock fixture drifted from the coordination baseline");
   for (const name of ["stable", "global"]) {
     const text = readFileSync(FIXTURES[name], "utf8");
     assert.ok(text.trimStart().startsWith("var __coordNative"), `${name} is not the coordination-adapted P11 bundle`);
+    assert.equal(shaFile(FIXTURES[name] + ".plan-review-unlock.bak"), P11_ADAPTED_SHA256);
+    assert.equal(hasUnlockedReviewPolicy(text), true);
   }
   assert.ok(!readFileSync(FIXTURES.stock, "utf8").trimStart().startsWith("var __coordNative"));
+});
+
+test("unlocked review detection requires both request-and-artifact-guarded policies", () => {
+  const policies = ['plan-consultant', 'plan-reviewer'].map(name =>
+    `"${name}":{requiresSkills:["ulw-plan"],requiresPlanArtifact:!0,forbidsSkills:[]}`);
+  assert.equal(hasUnlockedReviewPolicy(policies.join(',')), true);
+  assert.equal(hasUnlockedReviewPolicy(policies[0]), false);
+  assert.equal(hasUnlockedReviewPolicy(policies.join(',').replaceAll('forbidsSkills:[]', 'forbidsSkills:["ulw-execute"]')), false);
+  assert.equal(hasUnlockedReviewPolicy(policies.join(',').replaceAll('requiresPlanArtifact:!0', 'requiresPlanArtifact:!1')), false);
 });
 
 test("install inserts exactly the marked statement and the result passes node --check", (t) => {

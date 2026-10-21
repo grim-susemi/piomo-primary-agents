@@ -687,6 +687,24 @@ test('adapter-missing notice appears only after ulw-execute and only without the
   assert.equal(marked.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 0);
 });
 
+test('recorded unlocked policies do not warn after repeated execution', async t => {
+  const session = makeSession(t, {
+    branch: resumedBranch('atlas'),
+    loadedExtensionPaths: sandbox => {
+      const file = join(sandbox.root, 'tools', 'omo-task.js');
+      mkdirSync(join(sandbox.root, 'tools'), { recursive: true });
+      const policies = ['plan-consultant', 'plan-reviewer'].map(name =>
+        `"${name}":{requiresSkills:["ulw-plan"],requiresPlanArtifact:!0,forbidsSkills:[]}`);
+      writeFileSync(file, policies.join(','), 'utf8');
+      return [file];
+    },
+  });
+  await session.start('resume');
+  await session.fire('input', { type: 'input', text: '/ulw-execute first', source: 'interactive' });
+  await session.fire('input', { type: 'input', text: '/ulw-execute second', source: 'interactive' });
+  assert.equal(session.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 0);
+});
+
 test('/agent: no argument opens the picker, a name switches, an unknown name lists names', async t => {
   const session = makeSession(t, { registry: fakeRegistry(MODELS.filter(model => model.provider === 'sub')) });
   await session.start('resume');

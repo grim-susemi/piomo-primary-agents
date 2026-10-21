@@ -22,7 +22,7 @@ import { resolve } from '../../contract/resolve.mjs';
 import {
   memoryPath, readMemory, readRoster,
 } from '../../contract/schema.mjs';
-import { MARKER_BEGIN } from '../gate-adapter/adapter.mjs';
+import { MARKER_BEGIN, hasUnlockedReviewPolicy } from '../gate-adapter/adapter.mjs';
 import { installUi } from '../ui/install.mjs';
 import { isPrimaryMain } from './gate.mjs';
 import {
@@ -36,7 +36,7 @@ import {
 
 export const AGENT_COMMAND = 'agent';
 export const AGENT_PICKER_TITLE = '에이전트 선택';
-export const ADAPTER_MISSING_NOTICE = '이 세션은 실행 기록 때문에 정식 검토가 잠겨 있어요(게이트 어댑터 미설치). 새 세션에서 계획하세요';
+export const ADAPTER_MISSING_NOTICE = '실행 뒤 계획 검토 허용을 확인하지 못했어요. 현재 검토 정책 또는 게이트 어댑터 설정을 확인하세요';
 export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 누르면 아틀라스로 실행돼요';
 
 const RING = Object.freeze([...AGENT_IDS]);
@@ -374,7 +374,8 @@ export function createOrchestrator(pi, options = {}) {
     const file = paths.find(path => /omo-task\.js$/i.test(String(path)));
     if (!file) return false;
     try {
-      return readFileSync(file, 'utf8').includes(MARKER_BEGIN);
+      const text = readFileSync(file, 'utf8');
+      return text.includes(MARKER_BEGIN) || hasUnlockedReviewPolicy(text);
     } catch {
       return false;
     }

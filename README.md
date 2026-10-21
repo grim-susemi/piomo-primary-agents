@@ -27,7 +27,7 @@ Everything else switches. A trailing dot or a time like `10:30` counts as plain 
 
 Without memory the lane default applies. Changing a pin or resetting memory on the board bumps the roster `rev`, which makes the old memory file stale.
 
-**Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. Re-planning in the same session after ulw-execute needs the gate adapter. Without it, Prometheus only shows a notice that re-planning is locked. The adapter isn't installed live yet; that happens only in the owner-authorized step (todo 16). Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
+**Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. With the recorded `plan-review-unlock` policy, review remains available after execution and another execution does not relock it. Explicit owner requests and actual plan artifacts remain required. The optional gate adapter is only needed for the earlier execution-locking policy and is not installed automatically. Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
 
 **Limits.**
 - Prometheus may only change `.md` files under `<cwd>/.omo/`, runs a small read/plan bash allowlist, and delegates only to read-only agents.
@@ -65,12 +65,13 @@ Expect every test to pass with `# fail 0` at the end.
 
 ## What was verified, and what wasn't
 
-From the todo 11, 13 and 14 evidence:
+Original evidence and the October 21 recovery candidate have different scopes. Candidate verification is not a live installation:
 - S12, the live install run with a real model, was not run. It belongs to the todo 16 install.
 - The wide-width check (S3) ran at 155 cells, not 200. That's the widest Herdr pane.
-- The board profiles view (todo 13) closed with 5 open defects: loading skeleton, `:active` states, select ellipsis, dark-theme disabled contrast, dark-theme error captures.
-- The live `/profiles/state` doesn't expose the extension-owned memory files, so the read-only memory cell shows a dash in live use.
-- The installed SENPI bundle drifted after the todo 1 baseline, so the todo 14 bundle-identity criterion is unmet (environmental).
+- The former board defects were repaired; two independent reviews and 252 captures passed on the same frontend sources. The later inventory source fingerprint update is not presented as a new full visual review.
+- The candidate exposes extension-owned memories read-only; missing files show a dash. The board never writes those memory files.
+- Literal equality with the original bundle baseline remains false. The owner-approved original-plus-recorded-patches comparison reconciled 9,062 entries with no unexplained differences.
+- Real temporary TUI verification confirms the current policy: missing owner requests or plan artifacts are refused; a plain-language Prometheus replan is admitted; an active child reports to the same parent; another execution does not relock review. Final audits and live installation remain separate.
 
 ## Licence
 

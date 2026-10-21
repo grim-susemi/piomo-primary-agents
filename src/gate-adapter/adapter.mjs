@@ -18,6 +18,14 @@ export const ADAPTER_VERSION = "v1";
 export const MARKER_BEGIN = "/*piomo-primary-agents:gate-adapter:v1:begin*/";
 export const MARKER_END = "/*piomo-primary-agents:gate-adapter:v1:end*/";
 
+// The separately managed plan-review-unlock overlay keeps the explicit request
+// and artifact guards, but intentionally removes the execution-history lock.
+export function hasUnlockedReviewPolicy(input) {
+  const text = asBytes(input).toString("utf8");
+  return ["plan-consultant", "plan-reviewer"].every(name =>
+    text.includes(`"${name}":{requiresSkills:["ulw-plan"],requiresPlanArtifact:!0,forbidsSkills:[]}`));
+}
+
 // Anchor regex recorded by probe P11. Capture order:
 // text, space index, skill name, invoked recorder, invoked map, session id, requested recorder.
 export const ANCHOR_SOURCE =
