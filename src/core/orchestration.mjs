@@ -662,12 +662,12 @@ export function createOrchestrator(pi, options = {}) {
 
     const fresh = reason !== 'resume' && reason !== 'reload' && reason !== 'fork'
       && !branch.some(entry => entry?.type === 'message' || isIdentityEntry(entry));
-    // Availability is computed for every agent at session start; hephaestus is
-    // available only when resolve finds a GPT model for its lane.
-    const availability = computeAvailability();
-    if (fresh) {
-      const resolved = availability[current];
-      if (resolved && !resolved.unavailable) await applySessionModel(resolved, ctx);
+    const registry = ctxRef?.modelRegistry;
+    if (fresh && registry) {
+      const pinned = resolve({
+        agentId: current, roster, memory: null, laneOverrides, registry: registryAdapter(registry),
+      });
+      if (pinned.origin === 'pin') await applySessionModel(pinned, ctx);
     }
 
     if (ctx.mode === 'tui') {

@@ -5,7 +5,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultRoster, memoryPath, rosterPath, setAgentLane } from '../contract/schema.mjs';
+import {
+  defaultRoster, memoryPath, rosterPath, setAgentLane, setAgentPin,
+} from '../contract/schema.mjs';
 import {
   ADAPTER_MISSING_NOTICE, STREAMING_EXECUTE_NOTICE, createOrchestrator,
 } from '../src/core/orchestration.mjs';
@@ -424,9 +426,8 @@ test('model_select only stages: no memory file until a reconciliation event', as
 });
 
 test('extension switch entries are never learned as agent memory', async t => {
-  // A fresh session seeds Sisyphus (model_change + thinking) before the first
-  // switch. Those entries carry the host's "explicit" thinking selection, so
-  // only the extension's own-entry bookkeeping keeps them out of memory.
+  // Each switch writes its own thinking entry with the host's "explicit"
+  // selection; only the extension's own-entry bookkeeping keeps it out of memory.
   const session = makeSession(t, { branch: initialBranch() });
   await session.start('startup');
   assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
@@ -506,15 +507,120 @@ test('child session registers handlers but does nothing', async t => {
   assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
 });
 
-test('a fresh branch with only the runtime model_change starts on the lane model Y', async t => {
+const SISYPHUS_PIN = { provider: 'sub', modelId: 'lane-daily-heavy', thinking: 'low' };
+
+function writeSisyphusPin(agentDir, pin) {
+  const roster = setAgentPin(defaultRoster(), 'sisyphus', pin);
+  writeFileSync(rosterPath(agentDir), `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
+}
+
+function writeSisyphusMemory(agentDir) {
+  writeFileSync(memoryPath(agentDir, 'sisyphus'), `${JSON.stringify({
+    v: 1,
+    agentId: 'sisyphus',
+    model: { provider: 'sub', modelId: 'lane-daily' },
+    thinking: 'medium',
+    rosterRev: 0,
+    updatedAt: '2026-10-20T00:00:00.000Z',
+  }, null, 2)}\n`, 'utf8');
+}
+
+test('a fresh session without a Sisyphus pin keeps the host model and writes no start-up entry', async t => {
   const session = makeSession(t, { branch: initialBranch() });
   await session.start('startup');
 
-  assert.equal(session.ctx.model.id, 'lane-daily');
-  assert.notEqual(session.ctx.model.id, 'default-x');
-  const models = session.calls.filter(call => call.kind === 'model');
-  assert.equal(models.length, 1);
-  assert.equal(models[0].modelId, 'lane-daily');
+  assert.equal(session.ctx.model.id, 'default-x');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
+  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.equal(session.orchestration.current, 'sisyphus');
+});
+
+test('a fresh session starts on the Sisyphus pin and its thinking', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
+  await session.start('startup');
+
+  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
+  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
+});
+
+test('a fresh session with Sisyphus memory and no pin keeps the host model', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  writeSisyphusMemory(session.sandbox.agentDir);
+  await session.start('startup');
+
+  assert.equal(session.ctx.model.id, 'default-x');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
+  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+});
+
+test('a fresh session with Sisyphus memory and a pin starts on the pin', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  writeSisyphusMemory(session.sandbox.agentDir);
+  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
+  await session.start('startup');
+
+  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
+  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
+});
+
+test('a fresh session with a pin the registry cannot serve makes no call and does not throw', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  writeSisyphusPin(session.sandbox.agentDir, { provider: 'sub', modelId: 'missing-model', thinking: 'low' });
+  await session.start('startup');
+
+  assert.equal(session.ctx.model.id, 'default-x');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
+  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+});
+
+test('a fresh session with no model registry makes no call', async t => {
+  const session = makeSession(t, { branch: initialBranch(), registry: null });
+  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
+  await session.start('startup');
+
+  assert.equal(session.ctx.model.id, 'default-x');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
+});
+
+test('resume, reload and fork with a Sisyphus pin keep the host model', async t => {
+  for (const reason of ['resume', 'reload', 'fork']) {
+    const session = makeSession(t, { branch: initialBranch() });
+    writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
+    await session.start(reason);
+
+    assert.equal(session.ctx.model.id, 'default-x', `${reason} keeps its model`);
+    assert.equal(session.calls.filter(call => call.kind === 'model').length, 0, `${reason} makes no model call`);
+  }
+});
+
+test('a pinned fresh session never learns its start-up entries as agent memory', async t => {
+  const session = makeSession(t, { branch: initialBranch() });
+  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
+  await session.start('startup');
+  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
+
+  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
+  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
+    'the start-up thinking entry was learned as Sisyphus memory');
+
+  await session.orchestration.switchTo('hephaestus');
+  await session.orchestration.switchTo('sisyphus');
+  for (const agentId of ['sisyphus', 'hephaestus']) {
+    assert.equal(existsSync(memoryPath(session.sandbox.agentDir, agentId)), false,
+      `${agentId} memory must not be created by a switch`);
+  }
+});
+
+test('the identity entry payload has exactly the schemaVersion and agentId keys', async t => {
+  const session = makeSession(t);
+  await session.start('resume');
+  await session.orchestration.switchTo('prometheus');
+
+  const identityEntry = session.branch.filter(entry => entry.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1);
+  assert.deepEqual(Object.keys(identityEntry.data).sort(), ['agentId', 'schemaVersion']);
+  assert.deepEqual(identityEntry.data, { schemaVersion: 1, agentId: 'prometheus' });
 });
 
 test('a branch with a message entry keeps its model', async t => {

@@ -11,10 +11,18 @@ import { parseArgs } from 'node:util';
 import { MOCK_API_KEY, MOCK_MODELS, PROVIDER_ID } from './mock-extension.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-export const SENPI_CLI = process.env.PIOMO_SENPI_CLI
-  ?? 'C:/Users/USER/.bun/install/global/node_modules/@code-yeongyu/senpi/dist/bundle/cli.js';
-export const PLUGIN = process.env.PIOMO_PLUGIN
-  ?? 'C:/Users/USER/.omo-stable-500/staging/memory-rollback-5.1.38-r1/package/plugin';
+function pinnedPath(value, names) {
+  if (!value) throw new Error(`set ${names} to the pinned host path`);
+  return value;
+}
+export const SENPI_CLI = pinnedPath(
+  process.env.PIOMO_SENPI_CLI ?? process.env.OMO_STABLE_SENPI_BUNDLE,
+  'PIOMO_SENPI_CLI or OMO_STABLE_SENPI_BUNDLE',
+);
+export const PLUGIN = pinnedPath(
+  process.env.PIOMO_PLUGIN ?? process.env.OMO_STABLE_PLUGIN,
+  'PIOMO_PLUGIN or OMO_STABLE_PLUGIN',
+);
 export const HARNESS_DEADLINE_MS = 60000;
 export const SELF_CHECK_SENTINEL = 'PIOMO_QA_SELF_CHECK_OK';
 

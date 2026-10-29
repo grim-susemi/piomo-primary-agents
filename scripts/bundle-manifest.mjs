@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util';
 const ROOT_DEFAULTS = {
   senpi: 'C:/Users/USER/.bun/install/global/node_modules/@code-yeongyu/senpi',
   'pi-tui': 'C:/Users/USER/.bun/install/global/node_modules/@earendil-works/pi-tui',
-  plugin: 'C:/Users/USER/.omo-stable-500/staging/memory-rollback-5.1.38-r1/package/plugin',
+  plugin: process.env.OMO_STABLE_PLUGIN,
 };
 
 const { values } = parseArgs({
@@ -72,7 +72,9 @@ const manifest = {
 
 for (const [name, fallback] of Object.entries(ROOT_DEFAULTS)) {
   const envKey = `PIOMO_${name.toUpperCase().replace(/-/g, '_')}_ROOT`;
-  const root = resolve(process.env[envKey] ?? fallback);
+  const configured = process.env[envKey] ?? fallback;
+  if (!configured) throw new Error(`set ${envKey} (or OMO_STABLE_PLUGIN for plugin) to the ${name} root`);
+  const root = resolve(configured);
   const entries = await walk(root);
   const lines = entries.map(entry => `${entry.sha256}  ${entry.rel}`).join('\n') + '\n';
   const bytes = lines.length;

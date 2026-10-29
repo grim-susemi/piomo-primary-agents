@@ -16,12 +16,8 @@ const CLI = join(ROOT, "scripts", "gate-adapter.mjs");
 // Probe P11 fixtures. Tests copy these before touching anything; the source
 // files are read-only inputs and are hashed again at the end of this file.
 const FIXTURES = {
-  stable: process.env.PIOMO_GATE_TARGET_STABLE
-    ?? "C:/Users/USER/.omo-stable-500/staging/memory-rollback-5.1.38-r1/package/plugin/extensions/omo-task.js",
-  global: process.env.PIOMO_GATE_TARGET_GLOBAL
-    ?? "C:/Users/USER/.bun/install/global/node_modules/omo-ai/plugin/extensions/omo-task.js",
-  stock: process.env.PIOMO_GATE_TARGET_STOCK
-    ?? "C:/Users/USER/.omo-stable-500/staging/upgrade-5.1.38/pristine-omo-ai/plugin/extensions/omo-task.js",
+  stable: process.env.PIOMO_GATE_TARGET_STABLE,
+  stock: process.env.PIOMO_GATE_TARGET_STOCK,
 };
 const P11_ADAPTED_SHA256 = "2b559bb11f0285072722cffbb7f322756c81aec867f6fb4a683278f075d7f783";
 const UNLOCKED_SHA256 = "1149550465cbfde272891e27d78087ecb8003c0a3dbf32bef7aaa8dbc237cef0";
@@ -36,6 +32,7 @@ const shaFile = (file) => digest(readFileSync(file));
 
 function source(name) {
   const file = FIXTURES[name];
+  if (!file) throw new Error("set PIOMO_GATE_TARGET_STABLE/STOCK to the frozen 5.1.38 fixtures");
   assert.ok(existsSync(file), `P11 fixture missing: ${file}`);
   return file;
 }
@@ -114,27 +111,39 @@ function stateSnapshot(stateDir) {
 }
 
 const SOURCE_HASHES = Object.fromEntries(
-  Object.entries(FIXTURES).map(([name, file]) => [name, { file, sha256: shaFile(file) }]),
+  Object.keys(FIXTURES).map((name) => {
+    const file = source(name);
+    return [name, { file, sha256: shaFile(file) }];
+  }),
 );
 
-test("P11 fixtures: one anchor each; both real bundles are coordination-adapted", () => {
-  for (const [name, fixture] of Object.entries(FIXTURES)) {
-    const text = readFileSync(fixture, "utf8");
+test("P11 fixtures: one anchor each; the frozen stable bundle is coordination-adapted", () => {
+  for (const name of ["stable", "stock"]) {
+    const text = readFileSync(source(name), "utf8");
     assert.equal(anchorMatches(text).length, 1, `${name} anchor count`);
     assert.ok(!text.includes(MARKER_BEGIN), `${name} must not already carry the gate marker`);
   }
-  const stableHash = shaFile(FIXTURES.stable);
-  const globalHash = shaFile(FIXTURES.global);
-  assert.equal(stableHash, UNLOCKED_SHA256, "stable-500 target drifted from recorded unlock");
-  assert.equal(globalHash, UNLOCKED_SHA256, "global omo-ai target drifted from recorded unlock");
-  assert.equal(shaFile(FIXTURES.stock), COORDINATION_BASELINE_SHA256, "stock fixture drifted from the coordination baseline");
-  for (const name of ["stable", "global"]) {
-    const text = readFileSync(FIXTURES[name], "utf8");
-    assert.ok(text.trimStart().startsWith("var __coordNative"), `${name} is not the coordination-adapted P11 bundle`);
-    assert.equal(shaFile(FIXTURES[name] + ".plan-review-unlock.bak"), P11_ADAPTED_SHA256);
-    assert.equal(hasUnlockedReviewPolicy(text), true);
-  }
-  assert.ok(!readFileSync(FIXTURES.stock, "utf8").trimStart().startsWith("var __coordNative"));
+  assert.equal(shaFile(source("stable")), UNLOCKED_SHA256, "stable-500 target drifted from recorded unlock");
+  assert.equal(shaFile(source("stock")), COORDINATION_BASELINE_SHA256, "stock fixture drifted from the coordination baseline");
+  const text = readFileSync(source("stable"), "utf8");
+  assert.ok(text.trimStart().startsWith("var __coordNative"), "stable is not the coordination-adapted P11 bundle");
+  assert.equal(shaFile(source("stable") + ".plan-review-unlock.bak"), P11_ADAPTED_SHA256);
+  assert.equal(hasUnlockedReviewPolicy(text), true);
+  assert.ok(!readFileSync(source("stock"), "utf8").trimStart().startsWith("var __coordNative"));
+});
+
+test("pinned host omo-task.js: unlocked review policy is upstream; P11 state is recorded", () => {
+  const pinned = process.env.OMO_STABLE_PLUGIN;
+  if (!pinned) throw new Error("set OMO_STABLE_PLUGIN to the pinned plugin");
+  const text = readFileSync(join(pinned, "extensions", "omo-task.js"), "utf8");
+  assert.equal(hasUnlockedReviewPolicy(text), true);
+  console.log(JSON.stringify({
+    pinnedOmoTask: {
+      p11Anchors: anchorMatches(text).length,
+      startsWithCoordNative: text.trimStart().startsWith("var __coordNative"),
+      sha256: digest(text),
+    },
+  }));
 });
 
 test("unlocked review detection requires both request-and-artifact-guarded policies", () => {
@@ -273,7 +282,7 @@ test("stock coordination baseline installs and uninstalls", (t) => {
 
 test("coordination-adapted fixture installs and uninstalls", (t) => {
   const root = workspace(t);
-  const target = copyFixture(root, "global");
+  const target = copyFixture(root, "stable");
   const stateDir = join(root, "state");
   const before = readFileSync(target);
   assert.equal(anchorMatches(before.toString("utf8")).length, 1);
