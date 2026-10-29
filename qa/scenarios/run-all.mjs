@@ -8,7 +8,7 @@ import { writeText } from './lib.mjs';
 
 const SCENARIOS = [
   's1', 's2', 's3', 's4', 's4a', 's5', 's6', 's6b', 's7', 's8', 's9',
-  's10', 's11', 's13', 's14', 's15', 'refusal',
+  's10', 's11', 's13', 's14', 's15', 's16', 'refusal',
 ];
 
 const EVIDENCE = {
@@ -28,6 +28,7 @@ const EVIDENCE = {
   s13: 'task-11-piomo-primary-agents-S13.md',
   s14: 'task-11-piomo-primary-agents-S14.md',
   s15: 'task-11-piomo-primary-agents-S15.md',
+  s16: 'task-11-piomo-primary-agents-S16.md',
   refusal: 'task-11-piomo-primary-agents-refusal.txt',
 };
 

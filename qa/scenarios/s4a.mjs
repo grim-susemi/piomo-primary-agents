@@ -1,15 +1,17 @@
 // S4a - first-run lane seeding.
-// No memory files: every agent starts on its lane's first available rung.
-// The temp settings defaultModel differs from Sisyphus's lane rung; a startup
-// session and `/new` both start on the lane rung.
+// No memory files: an agent switched to starts on its lane's first available rung.
+// A fresh session with no roster pin (startup and `/new`) keeps the host start
+// model (HOST_MODEL) instead; the temp settings defaultModel is that model.
 import { parseArgs } from 'node:util';
 import {
   expect, listSessionFilesDeep, readRecent, runTuiScenario, sendKeys, sendText,
   sessionEntries, waitFooterModel, waitForSessionContaining, waitOutput, waitSessionEntry,
 } from './lib.mjs';
 
+const HOST_MODEL = 'claude-mock-max';
+
+// Sisyphus is not seeded at startup (Q4): a fresh session keeps HOST_MODEL.
 const LANE_MODELS = {
-  sisyphus: { modelId: 'claude-mock-medium', thinking: 'medium' },
   hephaestus: { modelId: 'gpt-mock-fast', thinking: 'medium' },
   prometheus: { modelId: 'claude-mock-xhigh', thinking: 'xhigh' },
   atlas: { modelId: 'claude-mock-medium', thinking: 'medium' },
@@ -29,31 +31,27 @@ export async function run({ out }) {
     name: 'S4a',
     label: 'PiOMO S4a seeding',
     scenarioOptions: {
-      model: 'claude-mock-max',
-      settings: { defaultProvider: 'qa-mock', defaultModel: 'qa-mock/claude-mock-max' },
+      model: HOST_MODEL,
+      settings: { defaultProvider: 'qa-mock', defaultModel: `qa-mock/${HOST_MODEL}` },
     },
     body: async (pane, record, scenario) => {
-      await waitFooterModel(pane, 'claude-mock-medium');
+      await waitFooterModel(pane, HOST_MODEL);
       const startupEntries = sessionEntries(scenario.sessionFile);
       record.checks.startup = {
         footer: footerOf(readRecent(pane)),
         lastModel: lastModel(startupEntries),
         modelChanges: startupEntries.filter(entry => entry?.type === 'model_change'),
       };
-      expect(record.checks.startup.lastModel?.modelId === 'claude-mock-medium',
-        `startup did not seed the Sisyphus lane rung: ${JSON.stringify(record.checks.startup.lastModel)}`);
-      expect(record.checks.startup.lastModel?.source === 'extension',
-        'startup model change did not come from the extension');
+      expect(!record.checks.startup.modelChanges.some(entry => entry.source === 'extension'),
+        `startup called setSessionModel without a Sisyphus pin: ${JSON.stringify(record.checks.startup.modelChanges)}`);
 
       record.checks.agents = [];
       for (const [agentId, expected] of Object.entries(LANE_MODELS)) {
-        if (agentId !== 'sisyphus') {
-          sendText(pane, `/agent ${agentId}`);
-          sendKeys(pane, 'enter');
-          await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
-            && entry.customType === 'primary-agent/v1' && entry.data?.agentId === agentId,
-          { timeout: 25000, label: `${agentId} identity` });
-        }
+        sendText(pane, `/agent ${agentId}`);
+        sendKeys(pane, 'enter');
+        await waitSessionEntry(scenario.sessionFile, entry => entry?.type === 'custom'
+          && entry.customType === 'primary-agent/v1' && entry.data?.agentId === agentId,
+        { timeout: 25000, label: `${agentId} identity` });
         await waitFooterModel(pane, expected.modelId);
         const entries = sessionEntries(scenario.sessionFile);
         const model = lastModel(entries);
@@ -64,7 +62,8 @@ export async function run({ out }) {
         expect(String(footer).includes(expected.modelId), `${agentId} footer misses ${expected.modelId}: ${footer}`);
       }
 
-      // `/new` starts a new session on Sisyphus's lane rung, not defaultModel.
+      // `/new` starts on the host start model (settings default); with no roster pin
+      // the fresh session gets no Sisyphus lane seeding.
       const before = new Set(listSessionFilesDeep(scenario.sandbox.stateDir));
       sendText(pane, '/new');
       sendKeys(pane, 'enter');
@@ -80,17 +79,16 @@ export async function run({ out }) {
         .filter(file => !before.has(file));
       record.checks.newSessionFile = newFile;
       expect(newFile !== undefined, '/new did not create a new session file');
-      await waitSessionEntry(newFile, entry => entry?.type === 'model_change'
-        && entry.modelId === 'claude-mock-medium' && entry.source === 'extension',
-      { timeout: 30000, label: 'new session lane model' });
+      await waitSessionEntry(newFile, entry => entry?.type === 'model_change' && entry.modelId === HOST_MODEL,
+        { timeout: 30000, label: 'new session host model' });
       const newEntries = sessionEntries(newFile);
       record.checks.newSession = {
         footer: footerOf(readRecent(pane)),
         lastModel: lastModel(newEntries),
         modelChanges: newEntries.filter(entry => entry?.type === 'model_change'),
       };
-      expect(record.checks.newSession.lastModel?.modelId === 'claude-mock-medium',
-        `/new did not start on the Sisyphus lane rung: ${JSON.stringify(record.checks.newSession.lastModel)}`);
+      expect(!record.checks.newSession.modelChanges.some(entry => entry.source === 'extension'),
+        `/new called setSessionModel without a Sisyphus pin: ${JSON.stringify(record.checks.newSession.modelChanges)}`);
 
       return { ok: true, checks: record.checks };
     },

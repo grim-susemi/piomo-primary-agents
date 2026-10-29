@@ -39,9 +39,16 @@ function writeRaw(name, text) {
 function p8() {
   const omo = readFileSync(join(PLUGIN, 'extensions', 'omo.js'), 'utf8').replaceAll("\r\n", "\n");
   const snippets = [];
-  for (const needle of ['Bc=ed(ll(),qc)', 'Wc=ed(ll(),Uc)', 'var Ld=', 'var zc=']) {
-    const index = omo.indexOf(needle);
-    if (index < 0) continue;
+  // Each structure: the 5.1.38 minified name first, then the 5.1.48 name of the same schema.
+  for (const alternatives of [
+    ['Bc=ed(ll(),qc)', 'xu=Td(jl(),ku)'],
+    ['Wc=ed(ll(),Uc)', 'Eu=Td(jl(),Su)'],
+    ['var Ld=', 'var mu='],
+    ['var zc=', 'var _u='],
+  ]) {
+    const hit = alternatives.map(needle => [needle, omo.indexOf(needle)]).find(([, index]) => index >= 0);
+    if (!hit) continue;
+    const [needle, index] = hit;
     snippets.push(`/* ${needle} @${index} */\n${omo.slice(Math.max(0, index - 500), index + 1400)}\n`);
   }
   const raw = writeRaw('p8-schema.txt', snippets.join('\n'));

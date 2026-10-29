@@ -1,6 +1,6 @@
 // S7 - resume, reload and new session.
 // Switch to Atlas, exit, resume the same session -> Atlas with the branch's
-// own model; /reload -> still Atlas; /new -> Sisyphus.
+// own model; /reload -> still Atlas; /new -> Sisyphus on the host start model (no roster pin, so no lane seeding).
 import { parseArgs } from 'node:util';
 import {
   createTuiScenario, exitCli, expect, isTitleRequest, listSessionFiles, readRecent,
@@ -140,8 +140,10 @@ export async function run({ out }) {
       };
       expect(current.checks.newSession.systemPromptHasAtlas === false, '/new kept Atlas');
       expect(current.checks.newSession.systemPromptHasAnyMarker === false, '/new kept an overlay');
-      expect(current.checks.newSession.modelChanges.some(entry => entry.modelId === 'claude-mock-medium'
-        && entry.source === 'extension'), '/new did not start on the Sisyphus lane rung');
+      // Q4: a fresh session with no roster pin keeps the host start model, so the
+      // extension never calls setSessionModel for it.
+      expect(!current.checks.newSession.modelChanges.some(entry => entry.source === 'extension'),
+        '/new called setSessionModel without a Sisyphus pin');
 
       return { ok: true, checks: current.checks };
     },
