@@ -38,17 +38,19 @@ Known residuals, left on purpose: the limits are per tool, so a direct file writ
 
 ## Install and uninstall
 
-Install: add this repo's path to the `packages` array in your agent dir's `settings.json` (back the file up first), then start a new senpi session.
+Install with the installer, from this repo:
 
-```json
-{
-  "packages": [
-    "C:\\Users\\USER\\orca\\projects\\piomo-primary-agents"
-  ]
-}
+```
+node scripts/install.mjs --agent-dir <agentDir>
 ```
 
-`dist/` is committed, so no build step is needed. Uninstall: remove that line and start a new session. To drop the memory too, delete `<agentDir>/primary-agents/memory/`. The extension never writes `omo.jsonc`.
+It builds `dist/` and requires `git status --porcelain -- dist` to be empty, then copies `dist/` to `<agentDir>/primary-agents/integration/generation-NNNNNN/` (the next free number, existing generations are never overwritten). It writes `current.json` and the shim `<agentDir>/extensions/omo-primary-agents.js`, both by temp file and rename. Add `--dry-run` to print the plan without writing anything. Start a new senpi session after installing.
+
+The installer refuses the live agent dir unless `--live` is given, refuses a `settings.json` that already loads this repo through `packages` or `extensions`, and refuses a shim it did not write. `dist/` is committed, so no build step is needed by you.
+
+Uninstall: `node scripts/install.mjs --agent-dir <agentDir> --uninstall`. It removes only the shim and `current.json`; generations stay. To drop the memory too, delete `<agentDir>/primary-agents/memory/`. The extension never writes `omo.jsonc`.
+
+The older `packages` line in `settings.json` (add this repo path to the `packages` array) also works, but do not combine it with the shim: remove that entry before installing the shim.
 
 Developer check:
 
