@@ -271,7 +271,7 @@ export function createOrchestrator(pi, options = {}) {
       const main = mainCandidate();
       if (main) candidates.push(['main', main]);
     }
-    const labels = { memory: '기억', pin: '핀', main: '메인', lane: '레인', builtin: '기본' };
+    const labels = { memory: '기억', pin: '핀', main: '메인' };
     for (const [origin, candidate] of candidates) {
       if (origin === resolved.origin) break;
       const found = adapter.find(candidate.provider, candidate.modelId);
@@ -281,7 +281,12 @@ export function createOrchestrator(pi, options = {}) {
       const key = JSON.stringify([agentId, origin, candidate.provider, candidate.modelId, reason]);
       if (warningKeys.has(key)) continue;
       warningKeys.add(key);
-      notify(ctxRef, `${DISPLAY[agentId]}: ${labels[origin]} 모델 ${candidate.provider}/${candidate.modelId}을 쓸 수 없어요(${reason}). ${labels[resolved.origin]} 모델 ${resolved.provider}/${resolved.modelId}로 시작했어요.`, 'warning');
+      const provider = providerOf(ctxRef?.model);
+      const modelId = modelIdOf(ctxRef?.model);
+      const actual = provider && modelId
+        ? `지금은 ${provider}/${modelId}(으)로 실행 중이에요.`
+        : '현재 실행 중인 모델을 확인할 수 없어요.';
+      notify(ctxRef, `${DISPLAY[agentId]}: ${labels[origin]} 모델 ${candidate.provider}/${candidate.modelId}을 쓸 수 없어요(${reason}). ${actual}`, 'warning');
     }
   }
 
@@ -569,7 +574,6 @@ export function createOrchestrator(pi, options = {}) {
       return { switched: false, reason: 'unavailable' };
     }
 
-    warnSkipped(destination, resolved, registryAdapter(ctxRef.modelRegistry));
     const model = findModel(ctxRef, resolved.provider, resolved.modelId);
     if (!model) {
       notify(ctxRef, `${DISPLAY[destination]} 모델을 찾지 못했어요.`, 'warning');
@@ -597,6 +601,7 @@ export function createOrchestrator(pi, options = {}) {
       notify(ctxRef, `모델을 바꾸지 못했어요: ${resolved.provider}/${resolved.modelId}`, 'warning');
     }
 
+    warnSkipped(destination, resolved, registryAdapter(ctxRef.modelRegistry));
     // Verify the live model. A true return with an unchanged ctx.model is a
     // held switch: the label stays pending until the runtime commits it. A
     // false return is a failed switch, not a held one.
@@ -770,8 +775,8 @@ export function createOrchestrator(pi, options = {}) {
     if (registry) {
       const adapter = registryAdapter(registry);
       const resolved = resolveAgent(current, adapter);
-      warnSkipped(current, resolved, adapter);
       if (fresh && (resolved.origin === 'pin' || resolved.origin === 'memory')) await applySessionModel(resolved, ctx);
+      warnSkipped(current, resolved, adapter);
     }
 
     if (ctx.mode === 'tui') {

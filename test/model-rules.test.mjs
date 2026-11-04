@@ -145,6 +145,19 @@ test('unregistered pin and unauthenticated main warn when lane succeeds', async 
   assert.ok(m.notices.some(n => n.message.includes('메인') && n.message.includes('미인증')));
 });
 
+test('fresh invalid pin warning names the unchanged host model, not the lane fallback', async t => {
+  const roster = defaultRoster();
+  roster.agents.sisyphus.pin = { provider: 'missing', modelId: 'missing', thinking: 'high' };
+  const s = setup(t, { models: [A], roster, lanes: lane(A) });
+  await s.fire('session_start', { reason: 'new' });
+  assert.equal(s.orch.availability().sisyphus.modelId, 'A');
+  assert.equal(s.calls.length, 0);
+  const warning = s.notices.find(n => n.message.includes('핀') && n.message.includes('미등록'));
+  assert.ok(warning);
+  assert.match(warning.message, /host\/host/);
+  assert.doesNotMatch(warning.message, /p\/A/);
+});
+
 test('repeated switches deduplicate skipped candidate warnings', async t => {
   const roster = defaultRoster();
   roster.agents.atlas.pin = { provider: 'missing', modelId: 'missing', thinking: 'high' };
