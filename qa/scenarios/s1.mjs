@@ -1,6 +1,6 @@
 // S1 - Tab cycle in a Herdr TUI pane.
-// Empty editor: Tab x4 -> Sisyphus -> Hephaestus -> Prometheus -> Atlas ->
-// Sisyphus. `/agent atlas` -> Atlas. `/agent` alone opens the selector.
+// Empty editor: Tab x4 alternates Sisyphus and Hephaestus.
+// `/agent atlas` -> Atlas. `/agent` alone opens the four-role selector.
 import { parseArgs } from 'node:util';
 import {
   expect, readText, runTuiScenario, sendKeys, sessionEntries, submitText, switchAgent,
@@ -19,7 +19,7 @@ export async function run({ out }) {
       labels.push({ step: 'initial', label: labelLine() });
       expect(labels[0].label.includes('Sisyphus'), `initial label: ${JSON.stringify(labels[0].label)}`);
 
-      for (const [index, agent] of ['Hephaestus', 'Prometheus', 'Atlas', 'Sisyphus'].entries()) {
+      for (const [index, agent] of ['Hephaestus', 'Sisyphus', 'Hephaestus', 'Sisyphus'].entries()) {
         sendKeys(pane, 'tab');
         const painted = await waitOutput(pane, `▌ ${agent}`, { timeout: 20000 });
         expect(painted.code === 0, `Tab ${index + 1} did not paint ${agent}`);
@@ -34,6 +34,9 @@ export async function run({ out }) {
         identity: entries.filter(entry => entry?.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1),
         label: labelLine(),
       };
+      sendKeys(pane, 'tab');
+      expect((await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 })).code === 0,
+        'Tab from an explicitly selected workflow role did not return to Sisyphus');
 
       await submitText(pane, '/agent');
       const selector = await waitOutput(pane, '에이전트 선택', { timeout: 20000 });

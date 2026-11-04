@@ -545,17 +545,17 @@ test('a fresh session starts on the Sisyphus pin and its thinking', async t => {
   assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
 });
 
-test('a fresh session with Sisyphus memory and no pin keeps the host model', async t => {
+test('a fresh session with matching Sisyphus memory applies its model and thinking', async t => {
   const session = makeSession(t, { branch: initialBranch() });
   writeSisyphusMemory(session.sandbox.agentDir);
   await session.start('startup');
 
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.deepEqual(session.ctx.model, { provider: 'sub', id: 'lane-daily' });
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
+  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['medium']);
 });
 
-test('a fresh session with Sisyphus memory and a pin starts on the pin', async t => {
+test('a fresh session with stale Sisyphus memory and a newer pin starts on the pin', async t => {
   const session = makeSession(t, { branch: initialBranch() });
   writeSisyphusMemory(session.sandbox.agentDir);
   writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
@@ -565,14 +565,14 @@ test('a fresh session with Sisyphus memory and a pin starts on the pin', async t
   assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
 });
 
-test('a fresh session with a pin the registry cannot serve makes no call and does not throw', async t => {
+test('a fresh session with an unregistered pin uses its lane and warns', async t => {
   const session = makeSession(t, { branch: initialBranch() });
   writeSisyphusPin(session.sandbox.agentDir, { provider: 'sub', modelId: 'missing-model', thinking: 'low' });
   await session.start('startup');
 
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.deepEqual(session.ctx.model, { provider: 'sub', id: 'lane-daily' });
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
+  assert.match(session.ui.calls.notify[0].message, /pin sub\/missing-model: unregistered; using sub\/lane-daily/);
 });
 
 test('a fresh session with no model registry makes no call', async t => {
@@ -656,7 +656,7 @@ test('a roster change between two switches is picked up', async t => {
   assert.equal(session.ctx.model.id, 'gpt-lane-heavy');
 });
 
-test('Tab skips every unavailable agent with one notice', async t => {
+test('Tab stays on Sisyphus when Hephaestus is unavailable with one notice', async t => {
   const session = makeSession(t, { registry: fakeRegistry(MODELS.filter(model => model.provider === 'sub')) });
   await session.start('resume');
   session.ui.calls.notify.length = 0;
@@ -664,11 +664,11 @@ test('Tab skips every unavailable agent with one notice', async t => {
   session.ui.editor.handleInput('\t');
   await session.orchestration.settled();
 
-  assert.equal(session.orchestration.current, 'prometheus');
-  assert.deepEqual(entryAgents(session), ['prometheus']);
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.deepEqual(entryAgents(session), []);
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
   assert.equal(session.ui.calls.notify.length, 1);
   assert.match(session.ui.calls.notify[0].message, /Hephaestus/);
-  assert.match(session.ui.calls.notify[0].message, /Prometheus로 전환했어요/);
 });
 
 test('Prometheus rewrite follows the mirror, not the text alone', async t => {

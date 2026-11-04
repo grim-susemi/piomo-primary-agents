@@ -4,10 +4,11 @@
 // primary-agents extension is the shim. `/agent atlas` must then record the
 // primary-agent/v1 identity entry. The negative run deletes the shim after
 // install: no identity entry may be recorded.
-import { rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createSandbox } from '../harness.mjs';
+import { ROOT, createSandbox } from '../harness.mjs';
 import { install } from '../../scripts/install.mjs';
 import {
   expect, identityEntries, runTuiScenario, sessionEntries, submitText, switchAgent, waitFile, writeText,
@@ -17,6 +18,14 @@ const SHIM = join('extensions', 'omo-primary-agents.js');
 const NEGATIVE_TIMEOUT = 10000;
 const SUMMARY = 'task-11-piomo-primary-agents-S17.md';
 const NEGATIVE_SUMMARY = 's17-negative.txt';
+
+function treeBytes(root, path = '') {
+  return readdirSync(join(root, path), { withFileTypes: true }).flatMap(entry => {
+    const file = join(path, entry.name);
+    return entry.isDirectory() ? treeBytes(root, file)
+      : [[file, readFileSync(join(root, file)).toString('base64')]];
+  }).sort(([left], [right]) => left.localeCompare(right));
+}
 
 function atlasEntries(file) {
   return identityEntries(sessionEntries(file)).filter(entry => entry.data?.agentId === 'atlas');
@@ -34,7 +43,19 @@ async function atlasRecordedWithin(file, timeout) {
 async function runCase({ out, name, removeShim }) {
   const sandbox = createSandbox();
   try {
-    const installed = install({ agentDir: sandbox.agentDir });
+    const installed = install({
+      agentDir: sandbox.agentDir,
+      // Production requires committed dist. Sandbox QA tests the uncommitted
+      // candidate through the existing status seam with an actual byte check.
+      distStatus() {
+        const fresh = join(sandbox.stateDir, 'fresh-dist');
+        execFileSync(process.execPath, [join(ROOT, 'scripts', 'build.mjs'), '--out', fresh], {
+          cwd: ROOT, timeout: 120000, windowsHide: true,
+        });
+        return JSON.stringify(treeBytes(join(ROOT, 'dist'))) === JSON.stringify(treeBytes(fresh))
+          ? '' : 'dist differs from an independent fresh build';
+      },
+    });
     if (removeShim) rmSync(join(sandbox.agentDir, SHIM));
     return await runTuiScenario({
       out,
@@ -45,7 +66,8 @@ async function runCase({ out, name, removeShim }) {
       body: async (pane, record, scenario) => {
         const launchesCandidate = scenario.args.some(arg => String(arg).replaceAll('\\', '/').endsWith('dist/extension.js'));
         expect(!launchesCandidate, 'launch args must not name dist/extension.js');
-        record.checks.install = { generation: installed.generation, shim: installed.shim_path };
+        record.checks.install = { generation: installed.generation, shim: installed.shim_path,
+          distCheck: 'independent fresh-build byte comparison' };
         if (removeShim) {
           await submitText(pane, '/agent atlas');
           const recorded = await atlasRecordedWithin(scenario.sessionFile, NEGATIVE_TIMEOUT);

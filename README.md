@@ -1,14 +1,16 @@
 # piomo-primary-agents
 
-> **한국어 요약:** senpi TUI에서 Sisyphus, Hephaestus, Prometheus, Atlas 네 메인 에이전트를 Tab으로 바꿔 쓰는 확장입니다. 입력창 아래 라벨, 에이전트별 모델 기억, Prometheus/Atlas 쓰기 제한, 말로 하는 계획 요청을 제공합니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
+> **한국어 요약:** senpi TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고 계획·실행 요청으로 Prometheus와 Atlas에 들어가는 확장입니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
 
-A senpi (pi) extension that lets you switch between four primary agents with one Tab press: Sisyphus, Hephaestus, Prometheus and Atlas. It does nothing in worker (child) sessions; it only acts in the main TUI session.
+A senpi (pi) extension for four primary agents. Tab toggles Sisyphus and Hephaestus; planning and execution requests enter Prometheus and Atlas. It acts only in the main TUI session.
 
 The Korean README is the main guide. This page is the short English version.
 
 ## Use
 
-**Switch with Tab.** Press Tab in the input. You get the next agent in the order Sisyphus, Hephaestus, Prometheus, Atlas, and the label updates. Agents that can't be used are skipped with a notice.
+**Switch with Tab.** Tab toggles Sisyphus and Hephaestus. From Prometheus or Atlas it returns to the saved role, or Sisyphus if none was saved. If Hephaestus is unavailable, Sisyphus stays active and a notice appears. `/agent` can select any available role.
+
+An explicit `/skill:ulw-plan` request enters Prometheus, and `/ulw-execute` or `/skill:ulw-execute` enters Atlas. After Atlas observes this session's active boulder work and that work is removed or completes, it returns to the saved role. The saved return role and arming state are not restored on reload or resume.
 
 Tab stays a completion key when:
 - the autocomplete list is open;
@@ -25,7 +27,9 @@ Everything else switches. A trailing dot or a time like `10:30` counts as plain 
 - memory: `<agentDir>/primary-agents/memory/<agentId>.json` (written by this extension only)
 - lanes and pins: `<agentDir>/primary-agents/roster.json` (written by the board only)
 
-Without memory the lane default applies. Changing a pin or resetting memory on the board bumps the roster `rev`, which makes the old memory file stale.
+Memory for the current roster `rev` wins, then the roster pin, then the lane default. Unpinned Sisyphus uses the settings main model before its lane. A fresh session applies matching memory; it does not reapply a main model the host already started with. Model and thinking picks remember the roster revision at selection time. Changing a pin or resetting memory on the board bumps `rev`, which makes old memory stale.
+
+The Windows switcher does not bump roster `rev`, so changes made there cannot override existing matching memory. Use the board to reset memory or change the pin. Unusable higher-priority candidates show their model, registration/authentication reason and the actual substitute once per session. File warnings appear once per code and file. Only Muse models may use `opencode-go` through a lane; explicit memory, pins and main selections keep their own priority, and other providers remain available.
 
 **Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. With the recorded `plan-review-unlock` policy, review remains available after execution and another execution does not relock it. Explicit owner requests and actual plan artifacts remain required. The optional gate adapter is only needed for the earlier execution-locking policy and is not installed automatically. Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
 

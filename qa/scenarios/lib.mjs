@@ -633,8 +633,8 @@ export async function runTuiScenario({
   body,
 }) {
   const mock = providedMock ?? await startMock({ captureBody: true, ...mockOptions });
-  const scenario = providedScenario ?? createTuiScenario({ name, mockUrl: mock.baseUrl, ...scenarioOptions });
   try {
+    const scenario = providedScenario ?? createTuiScenario({ name, mockUrl: mock.baseUrl, ...scenarioOptions });
     return await withTuiScenario({
       name,
       out,
@@ -646,7 +646,7 @@ export async function runTuiScenario({
       pane: providedPane,
       start,
       body: async (pane, record) => {
-        await waitReady(pane);
+        await waitRestartReady(pane, scenario.sessionFile);
         const readyText = readRecent(pane);
         record.checks.readyFrame = readyText;
         const warning = editorWarning(readyText);

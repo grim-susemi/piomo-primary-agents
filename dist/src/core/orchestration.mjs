@@ -20,7 +20,7 @@ import { atomicWriteJson } from '../../contract/atomic.mjs';
 import { readLaneOverrides } from '../../contract/jsonc.mjs';
 import { resolve } from '../../contract/resolve.mjs';
 import {
-  memoryPath, readMemory, readRoster,
+  memoryPath, readMemory, readRoster, rosterPath,
 } from '../../contract/schema.mjs';
 import { MARKER_BEGIN, hasUnlockedReviewPolicy } from '../gate-adapter/adapter.mjs';
 import { installUi } from '../ui/install.mjs';
@@ -39,7 +39,7 @@ export const AGENT_PICKER_TITLE = '에이전트 선택';
 export const ADAPTER_MISSING_NOTICE = '실행 뒤 계획 검토 허용을 확인하지 못했어요. 현재 검토 정책 또는 게이트 어댑터 설정을 확인하세요';
 export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 누르면 아틀라스로 실행돼요';
 
-const RING = Object.freeze([...AGENT_IDS]);
+const RING = Object.freeze(['sisyphus', 'hephaestus']);
 const DEFAULT_SESSION_ID = 'default';
 
 const REASON_TEXT = {
@@ -199,7 +199,11 @@ export function createOrchestrator(pi, options = {}) {
   let roster = null;
   let memories = {};
   let laneOverrides = {};
+  let mainModel = null;
   let current = 'sisyphus';
+  let returnTo = null;
+  let atlasArmed = false;
+  const atlasWorkIds = new Set();
   let cursor = initialCursor('sisyphus');
   let sessionId = DEFAULT_SESSION_ID;
   let adapterPresent = false;
@@ -212,6 +216,8 @@ export function createOrchestrator(pi, options = {}) {
   const nonGptNotices = new Set();
   const ownEntryIds = new Set();
   const pendingThinking = new Map();
+  const pendingUpdates = [];
+  const warningKeys = new Set();
 
   function notify(ctx, message, type = 'info') {
     const target = ctx ?? ctxRef;
@@ -251,6 +257,87 @@ export function createOrchestrator(pi, options = {}) {
     }
   }
 
+  function fileWarning(warning, file) {
+    if (!warning) return;
+    const key = JSON.stringify([warning.code, file]);
+    if (warningKeys.has(key)) return;
+    warningKeys.add(key);
+    notify(ctxRef, `${warning.code}: ${warning.message}`, 'warning');
+  }
+
+  function resolveAgent(agentId, adapter) {
+    const agent = roster.agents[agentId];
+    const injected = agentId === 'sisyphus' && !agent.pin && mainModel !== null;
+    const effective = injected
+      ? { ...roster, agents: { ...roster.agents, [agentId]: { ...agent, pin: mainModel } } }
+      : roster;
+    // A nonempty, impossible lane prevents the immutable resolver from walking
+    // builtin chains. Memory and explicit choices never pass through the guard.
+    const sentinel = { [agent.lane]: { models: [{ model: '\0piomo-no-lane' }] } };
+    const memory = memories[agentId] ?? null;
+    let resolved = resolve({ agentId, roster: effective, memory, laneOverrides: sentinel, registry: adapter });
+    if (injected && resolved.origin === 'pin') resolved = { ...resolved, origin: 'main' };
+    const skipped = [];
+    const candidates = [];
+    if (memory?.rosterRev === agent.rev) candidates.push(['memory', memory.model]);
+    if (effective.agents[agentId].pin) {
+      candidates.push([injected ? 'main' : 'pin', effective.agents[agentId].pin]);
+    }
+    for (const [candidate, model] of candidates) {
+      // Probe only the real candidate: resolve aggregates lane failures, so an
+      // artificial non-GPT sentinel would mask a GPT candidate's actual reason.
+      const probe = resolve({
+        agentId,
+        roster: { ...roster, agents: { ...roster.agents, [agentId]: { ...agent, pin: null } } },
+        memory: null,
+        laneOverrides: { [agent.lane]: { models: [{
+          model: model.modelId, providers: model.provider ? [model.provider] : [],
+        }] } },
+        registry: adapter,
+      });
+      if (!probe.unavailable) break;
+      let reason = probe.reason;
+      if (reason === 'non-gpt') {
+        const found = adapter.find(model.provider, model.modelId);
+        const matches = Array.isArray(found) ? found : [found];
+        if (!matches.some(match => match && (!model.provider || providerOf(match) === model.provider))) {
+          reason = 'not-found';
+        }
+      }
+      skipped.push({ candidate, model, reason: reason === 'not-found' ? 'unregistered' : reason });
+    }
+    if (resolved.unavailable) {
+      const guarded = {
+        ...adapter,
+        find(provider, modelId) {
+          const found = adapter.find(provider, modelId);
+          const allowed = model => {
+            if (providerOf(model) !== 'opencode-go' || /^muse(?:-|$)/i.test(modelId)) return true;
+            skipped.push({
+              candidate: 'lane', model: { provider: 'opencode-go', modelId }, reason: 'Muse-only lane',
+            });
+            return false;
+          };
+          return Array.isArray(found) ? found.filter(allowed) : (found && allowed(found) ? found : null);
+        },
+      };
+      resolved = resolve({
+        agentId,
+        roster: { ...roster, agents: { ...roster.agents, [agentId]: { ...agent, pin: null } } },
+        memory: null, laneOverrides, registry: guarded,
+      });
+    }
+    for (const { candidate, model, reason } of skipped) {
+      const name = `${model.provider ?? '?'}/${model.modelId}`;
+      const key = JSON.stringify([agentId, candidate, name, reason]);
+      if (warningKeys.has(key)) continue;
+      warningKeys.add(key);
+      const used = resolved.unavailable ? 'no usable model' : `${resolved.provider}/${resolved.modelId}`;
+      notify(ctxRef, `${DISPLAY[agentId]} ${candidate} ${name}: ${reason}; using ${used}. Check the model registration, authentication or board selection.`, 'warning');
+    }
+    return resolved;
+  }
+
   function computeAvailability() {
     const registry = ctxRef?.modelRegistry;
     if (!registry) {
@@ -259,13 +346,7 @@ export function createOrchestrator(pi, options = {}) {
     const adapter = registryAdapter(registry);
     const result = {};
     for (const agentId of AGENT_IDS) {
-      result[agentId] = resolve({
-        agentId,
-        roster,
-        memory: memories[agentId] ?? null,
-        laneOverrides,
-        registry: adapter,
-      });
+      result[agentId] = resolveAgent(agentId, adapter);
     }
     return result;
   }
@@ -315,7 +396,7 @@ export function createOrchestrator(pi, options = {}) {
       agentId: update.agentId,
       model: { provider: model.provider ?? null, modelId: model.modelId },
       thinking: thinking ?? null,
-      rosterRev: rosterRev(update.agentId),
+      rosterRev: update.rosterRev,
       updatedAt: new Date().toISOString(),
     };
     if (!agentDir) return;
@@ -337,17 +418,48 @@ export function createOrchestrator(pi, options = {}) {
       // entry. Those entries are ours, not the owner teaching an agent; learning
       // them would attribute the new agent's model to the old one.
       if (ownEntryIds.has(update.entryId)) continue;
-      writeMemoryUpdate(update);
+      const index = branch.findIndex(entry => entry.id === update.entryId);
+      const stagedIndex = pendingUpdates.findLastIndex(pending => pending.agentId === update.agentId
+        && pending.kind === update.kind && pending.fromIndex <= index);
+      const staged = stagedIndex === -1 ? null : pendingUpdates.splice(stagedIndex, 1)[0];
+      writeMemoryUpdate({ ...update, rosterRev: staged?.rosterRev ?? rosterRev(update.agentId) });
     }
+  }
+
+  function stageSelection(kind) {
+    // Capture the board revision before the host commits this selection. A
+    // later board edit must invalidate it even if reconciliation happens later.
+    const read = readRoster(agentDir);
+    roster = read.roster;
+    fileWarning(read.warning, rosterPath(agentDir));
+    pendingUpdates.push({ agentId: current, kind, rosterRev: rosterRev(current), fromIndex: getBranch().length });
   }
 
   function refreshContext() {
     if (!agentDir) return;
     const rosterRead = readRoster(agentDir);
     roster = rosterRead.roster;
+    fileWarning(rosterRead.warning, rosterPath(agentDir));
     const next = {};
-    for (const agentId of AGENT_IDS) next[agentId] = readMemory(agentDir, agentId).memory;
+    for (const agentId of AGENT_IDS) {
+      const read = readMemory(agentDir, agentId);
+      next[agentId] = read.memory;
+      fileWarning(read.warning, memoryPath(agentDir, agentId));
+    }
     memories = next;
+    const file = join(agentDir, 'settings.json');
+    mainModel = null;
+    try {
+      const settings = JSON.parse(readFileSync(file, 'utf8'));
+      if (typeof settings.defaultModel === 'string' && settings.defaultModel.length > 0) {
+        const slash = settings.defaultModel.indexOf('/');
+        mainModel = slash > 0
+          ? { provider: settings.defaultModel.slice(0, slash), modelId: settings.defaultModel.slice(slash + 1), thinking: settings.defaultThinkingLevel ?? null }
+          : { provider: settings.defaultProvider ?? null, modelId: settings.defaultModel, thinking: settings.defaultThinkingLevel ?? null };
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') fileWarning({ code: 'SETTINGS_INVALID', message: `${file}: ${error.message}` }, file);
+    }
   }
 
   function completePending() {
@@ -461,13 +573,17 @@ export function createOrchestrator(pi, options = {}) {
     if (switchOptions.source === 'tab' && resolved?.unavailable) {
       const skipped = [];
       let candidate = destination;
-      for (let step = 0; step < AGENT_IDS.length; step += 1) {
+      for (let step = 0; step < RING.length; step += 1) {
         if (!availability[candidate]?.unavailable) break;
         skipped.push(candidate);
         candidate = nextAgent(candidate);
       }
-      if (skipped.length >= AGENT_IDS.length || availability[candidate]?.unavailable) {
+      if (skipped.length >= RING.length || availability[candidate]?.unavailable) {
         notify(ctxRef, `사용할 수 있는 에이전트가 없어요(${skipped.map(id => DISPLAY[id]).join(', ')}).`, 'warning');
+        return { switched: false, reason: 'unavailable' };
+      }
+      if (candidate === current) {
+        notify(ctxRef, unavailableNotice(destination, resolved.reason), 'info');
         return { switched: false, reason: 'unavailable' };
       }
       notify(
@@ -522,8 +638,14 @@ export function createOrchestrator(pi, options = {}) {
 
     if (typeof resolved.thinking === 'string') setSessionThinking(resolved.thinking);
 
+    const leavingWorkflow = !RING.includes(current);
     appendIdentity(pi, destination);
     current = destination;
+    if (switchOptions.source === 'tab' && leavingWorkflow) {
+      returnTo = null;
+      atlasArmed = false;
+      atlasWorkIds.clear();
+    }
 
     if (held) pendingModel.fromIndex = getBranch().length;
     refresh();
@@ -570,11 +692,14 @@ export function createOrchestrator(pi, options = {}) {
       isStreaming: () => !liveIdle(ctx),
       isSwitchInFlight: () => switching > 0,
       onCycle: () => {
-        void switchTo(nextAgent(current), { source: 'tab' }).catch(() => undefined);
+        const leavingWorkflow = !RING.includes(current);
+        const target = leavingWorkflow ? (returnTo ?? 'sisyphus') : nextAgent(current);
+        void switchTo(target, { source: 'tab' }).catch(() => undefined);
       },
       onThinkingIntent: () => {
         completePending();
         reconcileMemoryNow();
+        stageSelection('thinking');
       },
       EditorBase: SubmitBase,
       notify: (message, type) => notify(ctx, message, type),
@@ -594,24 +719,27 @@ export function createOrchestrator(pi, options = {}) {
     completePending();
     reconcileMemoryNow();
 
-    if (isUlwExecute(text)) {
-      observeUlwExecute();
+    if (isUlwExecute(text) || isPlanRequest(text)) {
       if (!liveIdle(ctx)) {
         notify(ctx, STREAMING_EXECUTE_NOTICE, 'info');
         editor?.setText?.(text);
         return;
       }
+      if (RING.includes(current)) returnTo = current;
+      if (isPlanRequest(text)) {
+        await switchTo('prometheus', { source: 'submit' });
+        mirror.planRequest(sessionKey());
+        hostSubmit?.(text, details);
+        return;
+      }
+      observeUlwExecute();
+      atlasArmed = false;
+      atlasWorkIds.clear();
       try {
         await switchTo('atlas', { source: 'submit' });
       } finally {
         hostSubmit?.(text, details);
       }
-      return;
-    }
-
-    if (isPlanRequest(text)) {
-      mirror.planRequest(sessionKey());
-      hostSubmit?.(text, details);
       return;
     }
 
@@ -647,13 +775,20 @@ export function createOrchestrator(pi, options = {}) {
     adapterNoticeSent = false;
     scaffoldPath = detectScaffoldPath(ctx);
     ownEntryIds.clear();
+    pendingUpdates.length = 0;
+    warningKeys.clear();
 
     refreshContext();
-    laneOverrides = homeDir ? readLaneOverrides(homeDir).overrides : {};
+    const lanes = homeDir ? readLaneOverrides(homeDir) : { overrides: {}, warning: null };
+    laneOverrides = lanes.overrides;
+    fileWarning(lanes.warning, join(homeDir ?? '', 'omo.jsonc'));
 
     const branch = getBranch();
     const reason = event?.reason;
     current = reason === 'new' ? 'sisyphus' : restoreAgentId(branch);
+    returnTo = null;
+    atlasArmed = false;
+    atlasWorkIds.clear();
     cursor = initialCursor(current);
     // Startup entries are not the owner teaching an agent: advance the cursor
     // without writing memory (never record memory in session_start).
@@ -664,10 +799,12 @@ export function createOrchestrator(pi, options = {}) {
       && !branch.some(entry => entry?.type === 'message' || isIdentityEntry(entry));
     const registry = ctxRef?.modelRegistry;
     if (fresh && registry) {
-      const pinned = resolve({
-        agentId: current, roster, memory: null, laneOverrides, registry: registryAdapter(registry),
-      });
-      if (pinned.origin === 'pin') await applySessionModel(pinned, ctx);
+      const resolved = resolveAgent(current, registryAdapter(registry));
+      if (!resolved.unavailable
+        && (resolved.origin !== 'main' || !liveMatches(resolved.provider, resolved.modelId))) {
+        // With no configured choice, preserve the host's startup default.
+        if (mainModel || roster.agents[current].pin || memories[current]) await applySessionModel(resolved, ctx);
+      }
     }
 
     if (ctx.mode === 'tui') {
@@ -695,11 +832,13 @@ export function createOrchestrator(pi, options = {}) {
     reconcileMemoryNow();
   }
 
-  function onModelSelect() {
+  function onModelSelect(event) {
     if (!active) return;
     // Staged only: reconciliation at input/Tab/before_agent_start/shutdown
     // decides what the owner actually taught.
     completePending();
+    if (event?.source === 'extension' || event?.source === 'rpc') return;
+    stageSelection('model');
   }
 
   function onBeforeAgentStart(event, ctx) {
@@ -747,6 +886,42 @@ export function createOrchestrator(pi, options = {}) {
     observeUlwExecute();
   }
 
+  async function onAgentEnd(event, ctx) {
+    if (!active || current !== 'atlas' || event?.willRetry || event?.aborted) return;
+    let works;
+    try {
+      const data = JSON.parse(readFileSync(join(ctx.cwd, '.omo', 'boulder.json'), 'utf8'));
+      works = data?.works;
+      if (!works || typeof works !== 'object' || Array.isArray(works)) return;
+      if (Object.values(works).some(work => !work || typeof work !== 'object'
+        || !Array.isArray(work.session_ids) || typeof work.status !== 'string')) return;
+    } catch {
+      return;
+    }
+    const ownSession = `senpi:${sessionKey()}`;
+    for (const [id, work] of Object.entries(works)) {
+      if (work.session_ids.includes(ownSession) && work.status === 'active') {
+        atlasArmed = true;
+        atlasWorkIds.add(id);
+      }
+    }
+    if (!atlasArmed) return;
+    const finished = [...atlasWorkIds].every(id => {
+      const work = works[id];
+      return !work || (work.session_ids.includes(ownSession)
+        && ['completed', 'done', 'abandoned'].includes(work.status));
+    });
+    if (!finished) return;
+    const target = returnTo ?? 'sisyphus';
+    const result = await switchTo(target, { source: 'return' });
+    if (result.switched) {
+      returnTo = null;
+      atlasArmed = false;
+      atlasWorkIds.clear();
+      notify(ctx, `실행이 끝나 ${DISPLAY[target]}(으)로 돌아왔어요.`, 'info');
+    }
+  }
+
   function onSessionShutdown() {
     if (!active) return;
     completePending();
@@ -759,6 +934,7 @@ export function createOrchestrator(pi, options = {}) {
   pi.on('input', onInput);
   pi.on('model_select', onModelSelect);
   pi.on('before_agent_start', onBeforeAgentStart, { previewSafe: true });
+  pi.on('agent_end', onAgentEnd);
   pi.on('tool_call', onToolCall);
   pi.on('tool_result', onToolResult);
   pi.on('session_shutdown', onSessionShutdown);

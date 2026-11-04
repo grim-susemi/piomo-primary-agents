@@ -1,5 +1,5 @@
 // S4 - per-agent model memory on Hephaestus.
-// Pick a second GPT model with /model, Tab around twice, come back to
+// Pick a second GPT model with /model, Tab through two two-role round trips, come back to
 // Hephaestus, restart, and check the memory file; a non-GPT pick runs but is
 // not remembered and shows one notice.
 import { createHash } from 'node:crypto';
@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   createTuiScenario, exitCli, expect, readRecent, readText, run as runCommand, runTuiScenario,
-  sendKeys, sendText, submitText, waitOutput, waitRestartReady, waitSessionEntry,
+  sendKeys, sendText, submitText, waitFooterModel, waitOutput, waitRestartReady, waitSessionEntry,
 } from './lib.mjs';
 import { memoryPath } from '../../contract/schema.mjs';
 import { ROOT } from '../harness.mjs';
@@ -18,7 +18,7 @@ function hashFile(path) {
 }
 
 function footerOf(text) {
-  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('(qa-mock)')).at(-1) ?? '';
+  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('0/200K')).at(-1) ?? '';
 }
 
 async function command(pane, text, file, predicate, label) {
@@ -61,8 +61,8 @@ export async function run({ out }) {
         modelChange('gpt-mock-sol', 'command'), 'gpt-mock-sol model change');
 
       if (editor) {
-        // Hephaestus -> Prometheus -> Atlas -> Sisyphus -> Hephaestus
-        for (const agent of ['Prometheus', 'Atlas', 'Sisyphus', 'Hephaestus']) {
+        // Hephaestus -> Sisyphus -> Hephaestus, twice.
+        for (const agent of ['Sisyphus', 'Hephaestus', 'Sisyphus', 'Hephaestus']) {
           sendKeys(pane, 'tab');
           const painted = await waitOutput(pane, `▌ ${agent}`, { timeout: 20000 });
           expect(painted.code === 0, `Tab did not paint ${agent}`);
@@ -70,7 +70,7 @@ export async function run({ out }) {
         await waitOutput(pane, 'gpt-mock-sol', { timeout: 20000 });
         record.checks.tabRoundTrip = true;
       } else {
-        for (const id of ['prometheus', 'atlas', 'sisyphus', 'hephaestus']) {
+        for (const id of ['sisyphus', 'hephaestus', 'sisyphus', 'hephaestus']) {
           await command(pane, `/agent ${id}`, scenario.sessionFile, identity(id), `${id} identity`);
         }
         await waitOutput(pane, 'gpt-mock-sol', { timeout: 20000 });
@@ -116,6 +116,7 @@ export async function run({ out }) {
       record.checks.restartStartupGate = 'custom pi-rules.scan in restarted.jsonl';
       await command(pane, '/agent hephaestus', second.sessionFile,
         modelChange('gpt-mock-sol', 'extension'), 'memory restored on restart');
+      await waitFooterModel(pane, 'gpt-mock-sol');
       record.checks.restartFooter = footerOf(readRecent(pane));
       record.checks.othersUnchanged = others.map(entry => ({
         id: entry.id,

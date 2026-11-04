@@ -453,7 +453,7 @@ async function p6() {
       completionOpened('dot-slash') && completionOpened('slash-sk')
       ? 'PASS'
       : 'FAIL',
-    decision: 'Tab may cycle only when the token before the cursor is empty or not path/command-like; every path/slash-like token is passed to super.handleInput, which still opens completion',
+    decision: 'Tab may alternate Sisyphus and Hephaestus only when the token before the cursor is empty or not path/command-like; every path/slash-like token is passed to super.handleInput, which still opens completion',
     log,
     tokenShapes,
     listOpenSecond,

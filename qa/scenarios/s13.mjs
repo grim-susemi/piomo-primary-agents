@@ -33,6 +33,7 @@ function admitted(result) {
 }
 
 export async function run({ out }) {
+  console.log('S13 step=prepare');
   const route = (body) => {
     if (isTitleRequest(body)) return { text: 'S13 title' };
     const messages = Array.isArray(body.messages) ? body.messages : [];
@@ -64,12 +65,18 @@ export async function run({ out }) {
     name: 'S13',
     label: 'PiOMO S13 gate',
     scenarioOptions: {
+      pluginPath: process.env.PIOMO_QA_GATE_PLUGIN,
       pluginCopy: true,
       modelProfiles: OMO,
       patchPlugin: (copy) => applyGateAdapter(copy, join(copy, '..', 'adapter-state')),
     },
     mockOptions: { route },
     body: async (pane, record, scenario) => {
+      const step = name => {
+        (record.checks.steps ??= []).push({ name, at: new Date().toISOString() });
+        console.log(`S13 step=${name}`);
+      };
+      step('ready');
       mkdirSync(join(scenario.workDir, '.omo', 'plans'), { recursive: true });
       writeFileSync(join(scenario.workDir, '.omo', 'plans', 'demo.md'), '# demo plan\n', 'utf8');
       const editor = record.checks.editorInstalled === true;
@@ -79,9 +86,12 @@ export async function run({ out }) {
         await waitTurnEnd(file, before, { timeout: 45000 }).catch(() => null);
       };
 
+      step('enter-prometheus');
       await switchAgent(pane, scenario.sessionFile, 'prometheus');
 
+      step('first-plan-turn');
       await runTurn('플랜 짜줘 데모');
+      step('first-plan-finished');
       const firstEntries = sessionEntries(scenario.sessionFile);
       const firstUsers = userMessages(firstEntries);
       const firstTask = toolResults(firstEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
@@ -95,6 +105,7 @@ export async function run({ out }) {
       };
 
       // Restart on the same session and type again on Prometheus.
+      step('restart-exit');
       sendText(pane, '/exit');
       sendKeys(pane, 'enter');
       await waitOutput(pane, 'To resume this session', { timeout: 20000 }).catch(() => null);
@@ -114,6 +125,7 @@ export async function run({ out }) {
         .filter(entry => entry?.type === 'custom' && entry.customType === 'pi-rules.scan').length;
       const scansBefore = startupScans();
       runCommand(pane, restarted.command);
+      step('restart-startup');
       await waitFile(scenario.sessionFile, () => startupScans() > scansBefore, {
         timeout: 30000,
         label: 'restarted session startup',
@@ -124,7 +136,9 @@ export async function run({ out }) {
       expect(restored?.data?.agentId === 'prometheus',
         'the restarted session did not resume Prometheus');
       await waitOutput(pane, '▌ Prometheus', { timeout: 20000 });
+      step('restart-plan-turn');
       await runTurn('플랜 짜줘 데모');
+      step('restart-plan-finished');
       const secondEntries = sessionEntries(scenario.sessionFile);
       const secondUsers = userMessages(secondEntries);
       const secondTask = toolResults(secondEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
@@ -141,6 +155,7 @@ export async function run({ out }) {
       // Positive control: a new session starts on Sisyphus with an empty gate
       // state, so the same plain text is refused.
       await exitCli(pane);
+      step('control-startup');
       const control = createTuiScenario({
         name: 'S13-control',
         sandbox: scenario.sandbox,
@@ -159,7 +174,9 @@ export async function run({ out }) {
       });
       await waitReady(pane);
       await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 });
+      step('control-plan-turn');
       await runTurn('플랜 짜줘 데모', control.sessionFile);
+      step('control-plan-finished');
       const controlEntries = sessionEntries(control.sessionFile);
       const controlTask = toolResults(controlEntries).filter(result => result.toolName === 'task').at(-1) ?? null;
       record.checks.positiveControl = {

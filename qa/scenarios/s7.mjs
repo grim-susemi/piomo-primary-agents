@@ -5,13 +5,13 @@ import { parseArgs } from 'node:util';
 import {
   createTuiScenario, exitCli, expect, isTitleRequest, listSessionFiles, readRecent,
   run as runCommand, runTuiScenario, sendKeys, sendPrompt, sendText, sessionEntries,
-  submitText, systemPromptOf, textOfMessage, waitForSessionContaining, waitOutput,
+  submitText, systemPromptOf, textOfMessage, waitFile, waitForSessionContaining, waitOutput,
   waitReady, waitSessionEntry, waitTurnEnd,
 } from './lib.mjs';
 import { ROOT } from '../harness.mjs';
 
 function footerOf(text) {
-  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('(qa-mock)')).at(-1) ?? '';
+  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('/200K')).at(-1) ?? '';
 }
 
 function modelChanges(entries) {
@@ -88,8 +88,15 @@ export async function run({ out }) {
         sessionArg: sessionId,
       });
       debug(`resuming ${sessionId}`);
+      const startupScans = () => sessionEntries(created.sessionFile)
+        .filter(entry => entry?.type === 'custom' && entry.customType === 'pi-rules.scan').length;
+      const scansBefore = startupScans();
       runCommand(pane, resumed.command);
+      await waitFile(created.sessionFile, () => startupScans() > scansBefore, {
+        timeout: 30000, label: 'resumed session startup scan',
+      });
       await waitReady(pane);
+      current.checks.resumeStartupGate = 'new pi-rules.scan in resumed session';
       debug('resume ready');
       const resumedEntries = sessionEntries(created.sessionFile);
       current.checks.resumeIdentity = resumedEntries.filter(entry => entry?.type === 'custom'

@@ -1,5 +1,5 @@
 // Todo 8 visual QA extension. It wires the real host CustomEditor through
-// installUi with a four-agent in-memory state; no model call is made. The
+// installUi with a two-role in-memory Tab ring; no model call is made. The
 // driver reads the pane screen and this file's JSONL log.
 import { appendFileSync } from 'node:fs';
 import { installUi } from '../src/ui/install.mjs';
@@ -8,8 +8,6 @@ import { EditorBase } from '../src/host/editor-host.mjs';
 const AGENTS = [
   { agentId: 'sisyphus', modelId: 'claude-mock-medium', thinking: 'medium' },
   { agentId: 'hephaestus', modelId: 'gpt-mock-fast', thinking: 'medium' },
-  { agentId: 'prometheus', modelId: 'claude-mock-xhigh', thinking: 'xhigh' },
-  { agentId: 'atlas', modelId: 'claude-mock-max', thinking: 'max' },
 ];
 
 const LOG = process.env.PIOMO_T8_LOG;

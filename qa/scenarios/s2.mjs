@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import {
-  expect, readText, runTuiScenario, sendKeys, sendText, waitOutput,
+  expect, readText, runTuiScenario, sendKeys, sendText, switchAgent, waitOutput,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -20,8 +20,9 @@ export async function run({ out }) {
       writeFileSync(join(scenario.workDir, 'folder', 'beta.txt'), 'b\n', 'utf8');
 
       const labelLine = () => readText(pane).split(/\r?\n/).filter(line => line.includes('▌')).at(-1) ?? '';
+      expect(labelLine().includes('Sisyphus'), `initial label: ${JSON.stringify(labelLine())}`);
+      await switchAgent(pane, scenario.sessionFile, 'hephaestus');
       const initial = labelLine();
-      expect(initial.includes('Sisyphus'), `initial label: ${JSON.stringify(initial)}`);
 
       sendText(pane, './');
       sendKeys(pane, 'tab');
@@ -29,7 +30,7 @@ export async function run({ out }) {
       expect(pathList.code === 0, 'path Tab did not open completion');
       const pathFrame = readText(pane);
       record.checks.pathCompletion = { frame: pathFrame, label: labelLine() };
-      expect(labelLine().includes('Sisyphus'), 'path Tab changed the agent');
+      expect(labelLine() === initial, 'path Tab changed the agent or model');
 
       // With the list open, Tab accepts the highlighted item (the first entry
       // is folder/, so the editor must show ./folder/ after acceptance).
@@ -44,7 +45,7 @@ export async function run({ out }) {
       const slashList = await waitOutput(pane, '/skill', { timeout: 20000 });
       expect(slashList.code === 0, 'slash Tab did not open completion');
       record.checks.slashCompletion = { frame: readText(pane), label: labelLine() };
-      expect(labelLine().includes('Sisyphus'), 'slash Tab changed the agent');
+      expect(labelLine() === initial, 'slash Tab changed the agent or model');
 
       sendKeys(pane, 'tab');
       record.checks.slashAcceptedFrame = readText(pane);

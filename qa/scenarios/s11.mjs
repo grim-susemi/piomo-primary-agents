@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   closePane, createPane, createTuiScenario, exitCli, expect, hasLabel, readText,
-  run as runCommand, runTuiScenario, sendKeys, sendText, waitOutput, waitReady,
+  run as runCommand, runTuiScenario, sendKeys, sendText, waitAgentIdentity, waitOutput, waitReady,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -21,6 +21,11 @@ export async function run({ out }) {
       const firstFrame = readText(pane);
       expect(hasLabel(firstFrame), 'positive control: no label with the package installed');
       record.checks.installedLabel = firstFrame.split(/\r?\n/).filter(line => line.includes('▌')).at(-1) ?? '';
+      sendKeys(pane, 'tab');
+      await waitAgentIdentity(pane, scenario.sessionFile, 'hephaestus', { before: 0 });
+      sendKeys(pane, 'tab');
+      await waitAgentIdentity(pane, scenario.sessionFile, 'sisyphus', { before: 0 });
+      record.checks.twoRoleRoundTrip = true;
 
       // Leave the running session, then remove the package from the same temp
       // settings. The restart gets its own pane so the first CLI's label cannot

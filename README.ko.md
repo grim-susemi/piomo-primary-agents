@@ -1,9 +1,9 @@
 # piomo-primary-agents
 
-senpi(pi) TUI에서 메인 에이전트 네 명을 Tab 한 번으로 바꿔 쓰게 해 주는 확장입니다.
+senpi(pi) TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고 계획·실행 요청으로 다른 역할에 들어가는 확장입니다.
 Sisyphus, Hephaestus, Prometheus, Atlas가 그 네 명이고, 이 확장은 다음을 합니다.
 
-- 입력창에서 Tab을 누르면 다음 에이전트로 바뀝니다.
+- 입력창에서 Tab을 누르면 Sisyphus와 Hephaestus가 전환됩니다.
 - 입력창 아래에 지금 에이전트, 모델, 추론 단계를 한 줄로 보여 줍니다.
 - 에이전트마다 마지막으로 고른 모델을 기억합니다.
 - Prometheus와 Atlas는 쓸 수 있는 파일과 도구를 제한합니다.
@@ -20,7 +20,9 @@ English: [README.md](README.md) · WinForms 스위처 보관 절차: [docs/winfo
 ### 카드 1. 에이전트 바꾸기: Tab
 
 **할 일:** 입력창에서 Tab을 누릅니다.
-**결과:** Sisyphus → Hephaestus → Prometheus → Atlas 순서로 다음 에이전트가 되고, 아래 라벨이 바로 바뀝니다. 쓸 수 없는 에이전트는 건너뛰고 그 이유를 알려 줍니다.
+**결과:** Sisyphus와 Hephaestus가 서로 전환됩니다. Prometheus나 Atlas에서는 저장된 원래 역할로 돌아가며, 저장된 역할이 없으면 Sisyphus로 돌아갑니다. Hephaestus를 쓸 수 없으면 Sisyphus를 유지하고 알립니다. 네 역할 모두 `/agent`로 선택할 수 있습니다.
+
+`/skill:ulw-plan` 요청은 Prometheus로, `/ulw-execute` 또는 `/skill:ulw-execute` 요청은 Atlas로 전환합니다. Atlas가 이 세션의 활성 boulder 작업을 관측한 뒤 해당 작업이 제거되거나 완료되면 원래 역할로 돌아갑니다. 원래 역할과 관측 상태는 reload·resume에서 복원하지 않습니다.
 
 Tab이 **자동완성으로 남는** 경우가 있습니다.
 
@@ -62,7 +64,9 @@ Tab이 **자동완성으로 남는** 경우가 있습니다.
 - 기억: `<agentDir>/primary-agents/memory/<에이전트id>.json` (이 확장만 씁니다)
 - 레인과 핀: `<agentDir>/primary-agents/roster.json` (상황판만 씁니다)
 
-기억이 없으면 레인 기본값을 씁니다. Sisyphus와 Atlas는 daily-normal, Prometheus는 daily-heavy, Hephaestus는 geeky-normal입니다. 상황판에서 핀을 바꾸거나 기억을 초기화하면 roster의 `rev`가 올라가고, 예전 기억 파일은 무시됩니다.
+현재 roster `rev`와 맞는 기억, 핀, 레인 기본값 순으로 씁니다. 핀이 없는 Sisyphus는 레인보다 settings의 메인 모델을 먼저 씁니다. 새 세션에도 기억을 적용하며, 호스트가 이미 메인 모델로 시작했으면 다시 적용하지 않습니다. 모델·추론 단계 선택은 선택한 시점의 roster `rev`를 기억합니다. Sisyphus와 Atlas는 daily-normal, Prometheus는 daily-heavy, Hephaestus는 geeky-normal입니다. 상황판에서 핀을 바꾸거나 기억을 초기화하면 `rev`가 올라가고, 예전 기억은 무시됩니다.
+
+Windows 스위처에서 바꾼 값은 roster `rev`를 올리지 않아 기존 기억을 이기지 못합니다. 상황판에서 기억을 초기화하거나 핀을 바꾸세요. 사용할 수 없는 상위 후보는 모델명, 미등록·미인증 이유와 실제 대체 모델을 세션마다 한 번 알립니다. 파일 경고는 코드·파일마다 한 번 표시합니다. 레인에서 `opencode-go`를 쓸 수 있는 모델은 Muse뿐이며, 명시적으로 고른 기억·핀·메인은 이 제한을 받지 않습니다. 다른 제공자의 후보는 그대로 남습니다.
 
 ### 카드 5. Prometheus에게 계획 맡기기
 

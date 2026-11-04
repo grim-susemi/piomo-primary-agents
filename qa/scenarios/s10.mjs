@@ -2,7 +2,8 @@
 // The temp agent dir loads copies of everything in the P10 run-time list:
 // the plugin, the briefing generation named by current.json (with its own
 // state dir under the temp agent dir), every live extensions/packages entry and
-// agent/extensions/** file, plus this package. No load errors; their commands
+// agent/extensions/** file, plus this candidate through the managed shim when
+// present (otherwise its package entry). No load errors; their commands
 // are still listed. Any board server it started is stopped.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +46,7 @@ export async function run({ out }) {
     mkdirSync(join(sandbox.agentDir, 'briefing', 'state'), { recursive: true });
     // The other managed shims point at their own integration generations; copy
     // the code with an empty state dir so no live board state travels along.
-    for (const name of ['herdr-dashboard', 'oracle-advisor', 'herdr-dag', 'herdr-todo']) {
+    for (const name of ['herdr-dashboard', 'oracle-advisor', 'herdr-dag', 'herdr-todo', 'memento', 'primary-agents']) {
       copy(join(LIVE_AGENT, name, 'integration'), join(sandbox.agentDir, name, 'integration'));
       copy(join(LIVE_AGENT, name, 'current.json'), join(sandbox.agentDir, name, 'current.json'));
       mkdirSync(join(sandbox.agentDir, name, 'state'), { recursive: true });
@@ -54,6 +55,14 @@ export async function run({ out }) {
       join(sandbox.agentDir, 'oracle-advisor', 'oracle-policy-generation-000001.json'));
     copy(join(LIVE_AGENT, 'settings-guard'), join(sandbox.agentDir, 'settings-guard'));
     copy(join(LIVE_AGENT, 'task-record-publish-retry'), join(sandbox.agentDir, 'task-record-publish-retry'));
+    const primaryShim = join(sandbox.agentDir, 'extensions', 'omo-primary-agents.js');
+    const candidateViaShim = existsSync(primaryShim);
+    if (candidateViaShim) {
+      copy(join(ROOT, 'dist'), join(sandbox.agentDir, 'primary-agents', 'integration', 'qa-candidate'));
+      writeFileSync(primaryShim,
+        "// managed by omo-primary-agents\nexport { default } from '../primary-agents/integration/qa-candidate/extension.js';\n",
+        'utf8');
+    }
     // The live extension shim points at the generation; keep it working.
     const shim = join(sandbox.agentDir, 'extensions', 'omo-briefing.js');
     const herdrRepair = liveSettings.extensions?.find(entry => /herdr-senpi\.mjs$/i.test(entry));
@@ -65,7 +74,7 @@ export async function run({ out }) {
       join(sandbox.agentDir, 'task-no-fallback-pkg'),
       join(sandbox.agentDir, 'packages', 'piomo-agent-coordination-mod'),
       pluginCopy,
-      ROOT,
+      ...(candidateViaShim ? [] : [ROOT]),
     ];
     writeFileSync(join(sandbox.agentDir, 'settings.json'), `${JSON.stringify({
       quietStartup: true,
@@ -101,7 +110,7 @@ export async function run({ out }) {
     const basenames = new Set(loaded.map(path => path.replace(/\\/g, '/').split('/').pop()));
     const expectedBasenames = [
       'omo.js', 'omo-briefing.js', 'early-compaction.js', 'omo-settings-guard.js',
-      'extension.js', 'omo-task-no-fallback.js', 'herdr-senpi.mjs',
+      candidateViaShim ? 'omo-primary-agents.js' : 'extension.js', 'omo-task-no-fallback.js', 'herdr-senpi.mjs',
     ];
     const missing = expectedBasenames.filter(name => !basenames.has(name));
     const commands = session?.commands ?? [];
@@ -131,6 +140,7 @@ export async function run({ out }) {
       tempAgentDir: sandbox.agentDir,
       generation,
       copiedShim: existsSync(shim),
+      candidateViaShim,
       packages,
       loadedCount: loaded.length,
       loaded,

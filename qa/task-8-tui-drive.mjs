@@ -167,13 +167,13 @@ try {
 
   sendText(pane, 'hello');
   sendKeys(pane, 'tab');
-  await waitLog(entry => entry.event === 'cycle' && entry.agentId === 'prometheus', 15000);
-  const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 20000 });
-  expect(prometheus.code === 0, 'Tab on plain text did not cycle to Prometheus');
-  frame = capture('03-tab-hello-prometheus', pane);
+  await waitLog(entry => entry.event === 'cycle' && entry.agentId === 'sisyphus', 15000);
+  const sisyphus = await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 });
+  expect(sisyphus.code === 0, 'Tab on plain text did not return to Sisyphus');
+  frame = capture('03-tab-hello-sisyphus', pane);
   label = labelLine(frame.text);
-  expect(label.includes('▌ Prometheus  claude-mock-xhigh · xhigh'), `prometheus label: ${JSON.stringify(label)}`);
-  record.checks.prometheusLabel = label;
+  expect(label.includes('▌ Sisyphus  claude-mock-medium · medium'), `sisyphus label: ${JSON.stringify(label)}`);
+  record.checks.sisyphusReturnLabel = label;
 
   sendKeys(pane, 'ctrl+shift+i');
   await waitLog(entry => entry.event === 'set_text' && entry.text === '', 15000);
@@ -186,7 +186,7 @@ try {
   expect(completion.code === 0, 'path Tab did not open completion');
   frame = capture('04-path-completion', pane);
   label = labelLine(frame.text);
-  expect(label.includes('Prometheus'), `path Tab changed the agent: ${JSON.stringify(label)}`);
+  expect(label.includes('Sisyphus'), `path Tab changed the agent: ${JSON.stringify(label)}`);
   expect(cycleCount() === cyclesBeforePath, 'path Tab cycled the agent');
   record.checks.pathCompletionLabel = label;
 
@@ -206,7 +206,7 @@ try {
   await waitLog(entry => entry.event === 'notice' && entry.message === '응답 중에는 에이전트를 바꿀 수 없어요', 15000);
   frame = capture('06-streaming-busy', pane);
   label = labelLine(frame.text);
-  expect(label.includes('Prometheus'), `streaming Tab changed the agent: ${JSON.stringify(label)}`);
+  expect(label.includes('Sisyphus'), `streaming Tab changed the agent: ${JSON.stringify(label)}`);
   expect(cycleCount() === cyclesBeforeStreaming, 'streaming Tab cycled the agent');
   record.checks.streamingLabel = label;
   record.checks.busyNotice = true;

@@ -8,7 +8,7 @@ import { writeText } from './lib.mjs';
 
 const SCENARIOS = [
   's1', 's2', 's3', 's4', 's4a', 's5', 's6', 's6b', 's7', 's8', 's9',
-  's10', 's11', 's13', 's14', 's15', 's16', 's17', 'refusal',
+  's10', 's11', 's13', 's14', 's15', 's16', 's17', 's18-auto-return', 's19-board-roundtrip', 'refusal',
 ];
 
 const EVIDENCE = {
@@ -30,10 +30,17 @@ const EVIDENCE = {
   s15: 'task-11-piomo-primary-agents-S15.md',
   s16: 'task-11-piomo-primary-agents-S16.md',
   s17: 'task-11-piomo-primary-agents-S17.md',
+  's18-auto-return': 'task-11-piomo-primary-agents-S18.md',
+  's19-board-roundtrip': 'roundtrip.json',
   refusal: 'task-11-piomo-primary-agents-refusal.txt',
 };
 
-export function run({ out }) {
+export function run({ out, only, timeoutMs = 240000 }) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error('timeout-ms must be a positive integer');
+  const selected = only === undefined ? SCENARIOS : only.split(',').map(name => name.trim().toLowerCase());
+  for (const name of selected) {
+    if (!SCENARIOS.includes(name)) throw new Error(`unknown scenario: ${name}`);
+  }
   writeText(out, 'task-11-piomo-primary-agents-S12.md', [
     '# S12 - real-model smoke',
     '',
@@ -41,12 +48,12 @@ export function run({ out }) {
     'The real-model smoke runs after the todo-16 (a) install, pinned to a subscription provider.',
   ].join('\n'));
   const results = [];
-  for (const name of SCENARIOS) {
+  for (const name of selected) {
     const startedAt = new Date().toISOString();
     const started = Date.now();
     const child = spawnSync(process.execPath, [join(import.meta.dirname, `${name}.mjs`), '--out', out], {
       encoding: 'utf8',
-      timeout: 240000,
+      timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -70,10 +77,12 @@ export function run({ out }) {
       status: child.status,
       signal: child.signal,
       timedOut: child.error?.code === 'ETIMEDOUT',
+      timeoutMs,
       evidence: file,
       stdoutTail: String(child.stdout ?? '').slice(-2000),
       stderrTail: String(child.stderr ?? '').slice(-2000),
     });
+    console.log(`${name}: ${child.status === 0 ? 'PASS' : 'FAIL'} (exit=${child.status}, elapsed_ms=${Date.now() - started})`);
   }
   const ok = results.every(result => result.status === 0 && result.timedOut !== true);
   const summary = `${JSON.stringify({
@@ -88,12 +97,15 @@ export function run({ out }) {
 
 const invokedDirectly = process.argv[1]?.endsWith('run-all.mjs');
 if (invokedDirectly) {
-  const { values } = parseArgs({ options: { out: { type: 'string' } } });
+  const { values } = parseArgs({ options: {
+    out: { type: 'string' }, only: { type: 'string' }, 'timeout-ms': { type: 'string' },
+  } });
   if (!values.out) {
-    console.error('usage: node qa/scenarios/run-all.mjs --out <evidence dir>');
+    console.error('usage: node qa/scenarios/run-all.mjs --out <evidence dir> [--only s13] [--timeout-ms 600000]');
     process.exitCode = 2;
   } else {
-    const result = run({ out: values.out });
+    const result = run({ out: values.out, only: values.only,
+      timeoutMs: values['timeout-ms'] === undefined ? 240000 : Number(values['timeout-ms']) });
     process.exitCode = result.ok ? 0 : 1;
   }
 }

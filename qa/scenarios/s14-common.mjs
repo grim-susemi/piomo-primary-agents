@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   agentIdentityCount, applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario, sendKeys,
   sessionEntries, stopStateCount, submitText, switchAgent, textOfMessage, toolResults,
-  waitAgentIdentity, waitFile, waitOutput, waitTurnEnd,
+  waitAgentIdentity, waitFile, waitOutput, waitRestartReady, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES } from '../harness.mjs';
 
@@ -93,6 +93,7 @@ export async function runReplan({ out, name, adapter }) {
     evidenceName: `task-11-piomo-primary-agents-${name}`,
     label: `PiOMO ${name}`,
     scenarioOptions: {
+      pluginPath: process.env.PIOMO_QA_GATE_PLUGIN,
       pluginCopy: true,
       modelProfiles: OMO,
       patchPlugin: adapter
@@ -101,6 +102,10 @@ export async function runReplan({ out, name, adapter }) {
     },
     mockOptions: { route },
     body: async (pane, record, scenario) => {
+      await waitRestartReady(pane, scenario.sessionFile);
+      const installed = await waitOutput(pane, '▌ Sisyphus', { timeout: 25000 });
+      expect(installed.code === 0, 'the startup Sisyphus label did not paint');
+      record.checks.editorInstalled = true;
       mkdirSync(join(scenario.workDir, '.omo', 'plans'), { recursive: true });
       writeFileSync(join(scenario.workDir, '.omo', 'plans', 'demo.md'), '# demo plan\n', 'utf8');
       const editor = record.checks.editorInstalled === true;
@@ -150,27 +155,23 @@ export async function runReplan({ out, name, adapter }) {
       expect(backgroundEntry !== null,
         `the background task child did not report to this session: ${backgroundWaitError ?? 'no result entry'}`);
 
-      // 3. Re-plan in the same session: Tab back to Prometheus when the editor
-      //    exists, otherwise /agent as a recorded fallback.
+      // 3. Leave the workflow with one Tab, then explicitly enter planning.
+      //    Re-planning still exercises the original submit rewrite and gate.
       if (editor) {
-        const prometheusBefore = agentIdentityCount(scenario.sessionFile, 'prometheus');
+        const sisyphusBefore = agentIdentityCount(scenario.sessionFile, 'sisyphus');
         await waitOutput(pane, '▌ Atlas', { timeout: 20000 });
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          sendKeys(pane, 'tab');
-        }
-        const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 25000 });
-        expect(prometheus.code === 0, 'Tab did not return to Prometheus');
-        await waitAgentIdentity(pane, scenario.sessionFile, 'prometheus', { before: prometheusBefore });
-      } else {
-        await switchAgent(pane, scenario.sessionFile, 'prometheus', { expectLabel: false });
+        sendKeys(pane, 'tab');
+        await waitAgentIdentity(pane, scenario.sessionFile, 'sisyphus', { before: sisyphusBefore });
+        record.checks.tabWorkflowExit = true;
       }
+      await switchAgent(pane, scenario.sessionFile, 'prometheus', { expectLabel: editor });
       const replanTask = await runTurn('방향 다시 잡자', { expectPlanTask: true });
       record.checks.replan = {
         taskResult: replanTask,
         refused: refused(replanTask),
         admitted: replanTask !== null && refused(replanTask) === false,
         notice: readRecent(pane).split(/\r?\n/)
-          .filter(line => line.includes('게이트 어댑터 미설치')).at(0) ?? null,
+          .filter(line => line.includes('실행 뒤 계획 검토')).at(0) ?? null,
       };
 
       // 4. /ulw-execute again -> refused again.

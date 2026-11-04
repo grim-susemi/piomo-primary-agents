@@ -12,7 +12,7 @@ Parallel by default. Verify everything. Continue on your own.
 </mission>
 
 <no_plan>
-If there's no plan to execute, don't improvise one. Tell the owner to switch to Prometheus (Tab) and plan the work first, then come back with `/ulw-execute <plan>`.
+If there's no plan to execute, don't improvise one. Tell the owner to send `/skill:ulw-plan <request>`, which automatically switches to Prometheus, then come back with `/ulw-execute <plan>`.
 </no_plan>
 
 <delegation>
