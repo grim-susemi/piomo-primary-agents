@@ -3,11 +3,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  agentIdentityCount, applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario, sendKeys,
-  sessionEntries, stopStateCount, submitText, switchAgent, textOfMessage, toolResults,
-  waitAgentIdentity, waitFile, waitOutput, waitTurnEnd,
+  applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario,
+  sessionEntries, stopStateCount, submitText, textOfMessage, toolResults,
+  waitFile, waitOutput, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES } from '../harness.mjs';
+import { ADAPTER_MISSING_NOTICE } from '../../src/core/orchestration.mjs';
 
 const OMO = {
   model_profiles: SEEDED_MODEL_PROFILES,
@@ -105,8 +106,6 @@ export async function runReplan({ out, name, adapter }) {
       writeFileSync(join(scenario.workDir, '.omo', 'plans', 'demo.md'), '# demo plan\n', 'utf8');
       const editor = record.checks.editorInstalled === true;
 
-      await switchAgent(pane, scenario.sessionFile, 'prometheus');
-
       const runTurn = async (text, { expectPlanTask = false } = {}) => {
         const turnBefore = stopStateCount(sessionEntries(scenario.sessionFile));
         const planBefore = planTaskResults(scenario.sessionFile).length;
@@ -117,10 +116,16 @@ export async function runReplan({ out, name, adapter }) {
         return results.length > planBefore ? results.at(-1) : null;
       };
 
+      await runTurn('/skill:ulw-plan S14 initial plan');
+      expect((await waitOutput(pane, '▌ Prometheus', { timeout: 25000 })).code === 0,
+        'ulw-plan did not enter Prometheus');
+
       // 1. /ulw-execute -> switches to Atlas (when the editor exists) and the
       //    plan-consultant spawn is refused because the gate is locked.
       const executeTask = await runTurn('/ulw-execute demo', { expectPlanTask: true });
       record.checks.afterExecute = { taskResult: executeTask, refused: refused(executeTask) };
+      record.checks.adapterNotice = readRecent(pane).split(/\r?\n/)
+        .find(line => line.includes(ADAPTER_MISSING_NOTICE.split('.')[0])) ?? null;
       record.checks.afterExecuteAgent = sessionEntries(scenario.sessionFile)
         .filter(entry => entry?.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1) ?? null;
 
@@ -150,27 +155,16 @@ export async function runReplan({ out, name, adapter }) {
       expect(backgroundEntry !== null,
         `the background task child did not report to this session: ${backgroundWaitError ?? 'no result entry'}`);
 
-      // 3. Re-plan in the same session: Tab back to Prometheus when the editor
-      //    exists, otherwise /agent as a recorded fallback.
-      if (editor) {
-        const prometheusBefore = agentIdentityCount(scenario.sessionFile, 'prometheus');
-        await waitOutput(pane, '▌ Atlas', { timeout: 20000 });
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          sendKeys(pane, 'tab');
-        }
-        const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 25000 });
-        expect(prometheus.code === 0, 'Tab did not return to Prometheus');
-        await waitAgentIdentity(pane, scenario.sessionFile, 'prometheus', { before: prometheusBefore });
-      } else {
-        await switchAgent(pane, scenario.sessionFile, 'prometheus', { expectLabel: false });
-      }
+      // 3. Re-plan in the same session through the explicit planning entry.
+      await runTurn('/skill:ulw-plan S14 replan entry');
+      const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 25000 });
+      expect(prometheus.code === 0, 'ulw-plan did not return to Prometheus');
       const replanTask = await runTurn('방향 다시 잡자', { expectPlanTask: true });
       record.checks.replan = {
         taskResult: replanTask,
         refused: refused(replanTask),
         admitted: replanTask !== null && refused(replanTask) === false,
-        notice: readRecent(pane).split(/\r?\n/)
-          .filter(line => line.includes('게이트 어댑터 미설치')).at(0) ?? null,
+        notice: record.checks.adapterNotice,
       };
 
       // 4. /ulw-execute again -> refused again.

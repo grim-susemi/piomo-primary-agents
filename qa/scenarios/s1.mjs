@@ -1,10 +1,11 @@
 // S1 - Tab cycle in a Herdr TUI pane.
-// Empty editor: Tab x4 -> Sisyphus -> Hephaestus -> Prometheus -> Atlas ->
-// Sisyphus. `/agent atlas` -> Atlas. `/agent` alone opens the selector.
+// Empty editor: Tab alternates Sisyphus and Hephaestus. Plan/execute commands
+// enter the specialists, whose Tab returns to the previous main agent.
+// `/agent atlas` -> Atlas. `/agent` alone opens the selector.
 import { parseArgs } from 'node:util';
 import {
-  expect, readText, runTuiScenario, sendKeys, sessionEntries, submitText, switchAgent,
-  waitOutput,
+  expect, readText, runTuiScenario, sendKeys, sendPrompt, submitText, switchAgent,
+  waitOutput, agentIdentityCount, waitAgentIdentity,
 } from './lib.mjs';
 
 export async function run({ out }) {
@@ -19,13 +20,29 @@ export async function run({ out }) {
       labels.push({ step: 'initial', label: labelLine() });
       expect(labels[0].label.includes('Sisyphus'), `initial label: ${JSON.stringify(labels[0].label)}`);
 
-      for (const [index, agent] of ['Hephaestus', 'Prometheus', 'Atlas', 'Sisyphus'].entries()) {
+      for (const [index, agent] of ['Hephaestus', 'Sisyphus', 'Hephaestus', 'Sisyphus'].entries()) {
         sendKeys(pane, 'tab');
         const painted = await waitOutput(pane, `▌ ${agent}`, { timeout: 20000 });
         expect(painted.code === 0, `Tab ${index + 1} did not paint ${agent}`);
         labels.push({ step: `tab-${index + 1}`, label: labelLine() });
       }
       record.checks.labels = labels;
+
+      for (const main of ['sisyphus', 'hephaestus']) {
+        if (main === 'hephaestus') await switchAgent(pane, record.sessionFile, main);
+        for (const [command, specialist, display] of [
+          ['/skill:ulw-plan S1 plan', 'prometheus', 'Prometheus'],
+          ['/ulw-execute S1 plan', 'atlas', 'Atlas'],
+        ]) {
+          await sendPrompt(pane, record.sessionFile, command);
+          expect((await waitOutput(pane, `▌ ${display}`, { timeout: 20000 })).code === 0,
+            `${command} did not enter ${display}`);
+          const before = agentIdentityCount(record.sessionFile, main);
+          sendKeys(pane, 'tab');
+          await waitAgentIdentity(pane, record.sessionFile, main, { before });
+          record.checks[`${specialist}-return-${main}`] = labelLine();
+        }
+      }
 
       const entries = await switchAgent(pane, record.sessionFile, 'atlas');
       const atlasPainted = await waitOutput(pane, '▌ Atlas', { timeout: 20000 });

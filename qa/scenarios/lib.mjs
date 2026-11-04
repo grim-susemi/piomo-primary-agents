@@ -647,6 +647,14 @@ export async function runTuiScenario({
       start,
       body: async (pane, record) => {
         await waitReady(pane);
+        // The host paints its footer before asynchronous session_start hooks
+        // finish. Installed-package cases must await the extension's own
+        // label (or explicit install failure), not that earlier host paint.
+        const packages = JSON.parse(readFileSync(join(scenario.agentDir, 'settings.json'), 'utf8')).packages ?? [];
+        if (packages.includes(ROOT) || existsSync(join(scenario.agentDir, 'extensions', 'omo-primary-agents.js'))) {
+          await waitRegex(pane, '▌ |Tab 전환 UI를 불러오지 못했어요|에이전트 라벨을 설치하지 못했어요',
+            { timeout: 30000 });
+        }
         const readyText = readRecent(pane);
         record.checks.readyFrame = readyText;
         const warning = editorWarning(readyText);

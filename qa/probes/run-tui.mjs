@@ -402,6 +402,7 @@ async function p6() {
     },
     async script({ pane, record: runRecord }) {
       await waitLog(log, entry => entry.event === 'editor_installed', 30000);
+      // P6 probes editor token/completion routing; it never selects a specialist.
       const caseNames = ['empty', 'hello', 'hello-dot', 'time', 'korean', 'dot-slash', 'slash-sk', 'cdrive', 'list-open'];
       for (const name of caseNames) {
         const setWait = waitLog(log, entry => entry.event === 'case_set' && entry.case === name, 20000);

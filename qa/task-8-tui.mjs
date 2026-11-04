@@ -1,5 +1,5 @@
 // Todo 8 visual QA extension. It wires the real host CustomEditor through
-// installUi with a four-agent in-memory state; no model call is made. The
+// installUi with a two-main-agent ring and explicit specialist entry; no model call is made. The
 // driver reads the pane screen and this file's JSONL log.
 import { appendFileSync } from 'node:fs';
 import { installUi } from '../src/ui/install.mjs';
@@ -16,6 +16,7 @@ const LOG = process.env.PIOMO_T8_LOG;
 if (!LOG) throw new Error('PIOMO_T8_LOG is required');
 
 let index = 0;
+let returnTo = 0;
 let streaming = false;
 let handle = null;
 let uiContext = null;
@@ -40,15 +41,37 @@ function notify(message, type = 'info') {
   uiContext?.ui.notify(message, type);
 }
 
+// This fixture tests installUi only. Consume workflow submissions locally so
+// the visual driver can enter both specialists without making a model call.
+class WorkflowEditor extends EditorBase {
+  constructor(...args) {
+    super(...args);
+    let hostSubmit;
+    Object.defineProperty(this, 'onSubmit', {
+      configurable: true,
+      get: () => text => {
+        const target = text.startsWith('/skill:ulw-plan') ? 2 : text.startsWith('/ulw-execute') ? 3 : null;
+        if (target === null) return hostSubmit?.(text);
+        if (index < 2) returnTo = index;
+        index = target;
+        this.setText('');
+        log({ event: 'enter', agentId: current().agentId });
+        handle?.refresh();
+      },
+      set: value => { hostSubmit = value; },
+    });
+  }
+}
+
 function install(ctx, reason) {
   uiContext = ctx;
   handle = installUi(ctx, {
-    EditorBase,
+    EditorBase: WorkflowEditor,
     snapshot,
     isStreaming: () => streaming,
     isSwitchInFlight: () => false,
     onCycle: () => {
-      index = (index + 1) % AGENTS.length;
+      index = index < 2 ? (index + 1) % 2 : returnTo;
       log({ event: 'cycle', agentId: current().agentId });
       notify(`T8CYCLE:${current().agentId}`);
       handle?.refresh();

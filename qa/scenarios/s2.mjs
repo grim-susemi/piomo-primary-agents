@@ -1,6 +1,7 @@
 // S2 - completion stays untouched.
 // `./` + Tab and `/sk` + Tab open the completion list and keep the agent;
-// with the list open Tab accepts an item.
+// with the list open Tab accepts an item. These are completion Tabs, so the
+// two-main-agent ring must never consume them.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';

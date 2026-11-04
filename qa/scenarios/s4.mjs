@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   createTuiScenario, exitCli, expect, readRecent, readText, run as runCommand, runTuiScenario,
-  sendKeys, sendText, submitText, waitOutput, waitRestartReady, waitSessionEntry,
+  sendKeys, sendText, sendPrompt, submitText, waitOutput, waitRestartReady, waitSessionEntry,
+  agentIdentityCount, waitAgentIdentity,
 } from './lib.mjs';
 import { memoryPath } from '../../contract/schema.mjs';
 import { ROOT } from '../harness.mjs';
@@ -18,7 +19,8 @@ function hashFile(path) {
 }
 
 function footerOf(text) {
-  return String(text ?? '').split(/\r?\n/).filter(line => line.includes('(qa-mock)')).at(-1) ?? '';
+  // At narrow pane widths the host omits the provider but retains model:thinking.
+  return String(text ?? '').split(/\r?\n/).filter(line => /\b(?:claude|gpt)-mock-[\w-]+:/.test(line)).at(-1) ?? '';
 }
 
 async function command(pane, text, file, predicate, label) {
@@ -61,11 +63,24 @@ export async function run({ out }) {
         modelChange('gpt-mock-sol', 'command'), 'gpt-mock-sol model change');
 
       if (editor) {
-        // Hephaestus -> Prometheus -> Atlas -> Sisyphus -> Hephaestus
-        for (const agent of ['Prometheus', 'Atlas', 'Sisyphus', 'Hephaestus']) {
+        // Two full main-agent rings preserve the learned Hephaestus model.
+        for (const agent of ['Sisyphus', 'Hephaestus', 'Sisyphus', 'Hephaestus']) {
           sendKeys(pane, 'tab');
           const painted = await waitOutput(pane, `▌ ${agent}`, { timeout: 20000 });
           expect(painted.code === 0, `Tab did not paint ${agent}`);
+        }
+        for (const [request, display] of [
+          ['/skill:ulw-plan S4 memory', 'Prometheus'],
+          ['/ulw-execute S4 memory', 'Atlas'],
+        ]) {
+          await sendPrompt(pane, scenario.sessionFile, request);
+          expect((await waitOutput(pane, `▌ ${display}`, { timeout: 20000 })).code === 0,
+            `${request} did not enter ${display}`);
+          const before = agentIdentityCount(scenario.sessionFile, 'hephaestus');
+          sendKeys(pane, 'tab');
+          await waitAgentIdentity(pane, scenario.sessionFile, 'hephaestus', { before });
+          expect(footerOf(readRecent(pane)).includes('gpt-mock-sol'),
+            `Tab from ${display} did not restore Hephaestus memory`);
         }
         await waitOutput(pane, 'gpt-mock-sol', { timeout: 20000 });
         record.checks.tabRoundTrip = true;

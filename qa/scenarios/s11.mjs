@@ -48,6 +48,7 @@ export async function run({ out }) {
         const restarted = readText(fresh);
         expect(!hasLabel(restarted), 'the label is still shown after uninstall');
 
+        // This is stock completion after uninstall, not agent navigation.
         sendText(fresh, './');
         sendKeys(fresh, 'tab');
         const completion = await waitOutput(fresh, 'alpha.txt', { timeout: 20000 });

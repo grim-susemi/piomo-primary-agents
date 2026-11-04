@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, watch, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './harness.mjs';
+import { submitText } from './scenarios/lib.mjs';
 import {
   closePane, createPane, createTuiSandbox, herdr, killTree, readRaw, readText, run,
   sendKeys, sendText, startMock, waitOutput,
@@ -167,10 +168,16 @@ try {
 
   sendText(pane, 'hello');
   sendKeys(pane, 'tab');
-  await waitLog(entry => entry.event === 'cycle' && entry.agentId === 'prometheus', 15000);
+  await waitLog(entry => entry.event === 'cycle' && entry.agentId === 'sisyphus', 15000);
+  const sisyphus = await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 });
+  expect(sisyphus.code === 0, 'Tab on plain text did not cycle back to Sisyphus');
+  sendKeys(pane, 'ctrl+shift+i');
+  await waitLog(entry => entry.event === 'set_text' && entry.text === '', 15000);
+  await submitText(pane, '/skill:ulw-plan T8 plan');
+  await waitLog(entry => entry.event === 'enter' && entry.agentId === 'prometheus', 15000);
   const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 20000 });
-  expect(prometheus.code === 0, 'Tab on plain text did not cycle to Prometheus');
-  frame = capture('03-tab-hello-prometheus', pane);
+  expect(prometheus.code === 0, 'ulw-plan did not enter Prometheus');
+  frame = capture('03-plan-prometheus', pane);
   label = labelLine(frame.text);
   expect(label.includes('▌ Prometheus  claude-mock-xhigh · xhigh'), `prometheus label: ${JSON.stringify(label)}`);
   record.checks.prometheusLabel = label;
@@ -213,6 +220,21 @@ try {
 
   sendKeys(pane, 'ctrl+shift+o');
   await waitLog(entry => entry.event === 'stream' && entry.streaming === false, 15000);
+
+  for (const display of ['Prometheus', 'Atlas']) {
+    if (display === 'Atlas') {
+      await submitText(pane, '/ulw-execute T8 plan');
+      await waitLog(entry => entry.event === 'enter' && entry.agentId === 'atlas', 15000);
+      expect((await waitOutput(pane, '▌ Atlas', { timeout: 20000 })).code === 0,
+        'ulw-execute did not enter Atlas');
+    }
+    const cycles = cycleCount();
+    sendKeys(pane, 'tab');
+    await waitLog(entry => entry.event === 'cycle' && cycleCount() > cycles, 15000);
+    expect((await waitOutput(pane, '▌ Sisyphus', { timeout: 20000 })).code === 0,
+      `Tab from ${display} did not return to Sisyphus`);
+    record.checks[`${display}Return`] = labelLine(readText(pane));
+  }
 
   frame = capture('07-final', pane);
   record.checks.finalLabel = labelLine(frame.text);
