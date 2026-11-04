@@ -3,9 +3,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario,
+  agentIdentityCount, applyGateAdapter, expect, isTitleRequest, readRecent, runTuiScenario,
   sessionEntries, stopStateCount, submitText, textOfMessage, toolResults,
-  waitFile, waitOutput, waitTurnEnd,
+  waitAgentIdentity, waitFile, waitOutput, waitTurnEnd,
 } from './lib.mjs';
 import { SEEDED_MODEL_PROFILES } from '../harness.mjs';
 import { ADAPTER_MISSING_NOTICE } from '../../src/core/orchestration.mjs';
@@ -124,8 +124,6 @@ export async function runReplan({ out, name, adapter }) {
       //    plan-consultant spawn is refused because the gate is locked.
       const executeTask = await runTurn('/ulw-execute demo', { expectPlanTask: true });
       record.checks.afterExecute = { taskResult: executeTask, refused: refused(executeTask) };
-      record.checks.adapterNotice = readRecent(pane).split(/\r?\n/)
-        .find(line => line.includes(ADAPTER_MISSING_NOTICE.split('.')[0])) ?? null;
       record.checks.afterExecuteAgent = sessionEntries(scenario.sessionFile)
         .filter(entry => entry?.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1) ?? null;
 
@@ -156,15 +154,22 @@ export async function runReplan({ out, name, adapter }) {
         `the background task child did not report to this session: ${backgroundWaitError ?? 'no result entry'}`);
 
       // 3. Re-plan in the same session through the explicit planning entry.
+      const prometheusBefore = agentIdentityCount(scenario.sessionFile, 'prometheus');
       await runTurn('/skill:ulw-plan S14 replan entry');
       const prometheus = await waitOutput(pane, '▌ Prometheus', { timeout: 25000 });
       expect(prometheus.code === 0, 'ulw-plan did not return to Prometheus');
+      await waitAgentIdentity(pane, scenario.sessionFile, 'prometheus', { before: prometheusBefore });
+      record.checks.replanIdentity = {
+        before: prometheusBefore,
+        after: agentIdentityCount(scenario.sessionFile, 'prometheus'),
+      };
       const replanTask = await runTurn('방향 다시 잡자', { expectPlanTask: true });
       record.checks.replan = {
         taskResult: replanTask,
         refused: refused(replanTask),
         admitted: replanTask !== null && refused(replanTask) === false,
-        notice: record.checks.adapterNotice,
+        notice: readRecent(pane).split(/\r?\n/)
+          .find(line => line.includes(ADAPTER_MISSING_NOTICE.split('.')[0])) ?? null,
       };
 
       // 4. /ulw-execute again -> refused again.
