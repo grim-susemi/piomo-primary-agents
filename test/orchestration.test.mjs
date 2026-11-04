@@ -664,11 +664,11 @@ test('Tab skips every unavailable agent with one notice', async t => {
   session.ui.editor.handleInput('\t');
   await session.orchestration.settled();
 
-  assert.equal(session.orchestration.current, 'prometheus');
-  assert.deepEqual(entryAgents(session), ['prometheus']);
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.deepEqual(entryAgents(session), []);
   assert.equal(session.ui.calls.notify.length, 1);
   assert.match(session.ui.calls.notify[0].message, /Hephaestus/);
-  assert.match(session.ui.calls.notify[0].message, /Prometheus로 전환했어요/);
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
 });
 
 test('Prometheus rewrite follows the mirror, not the text alone', async t => {

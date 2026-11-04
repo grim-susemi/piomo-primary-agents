@@ -39,7 +39,7 @@ export const AGENT_PICKER_TITLE = '에이전트 선택';
 export const ADAPTER_MISSING_NOTICE = '실행 뒤 계획 검토 허용을 확인하지 못했어요. 현재 검토 정책 또는 게이트 어댑터 설정을 확인하세요';
 export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 누르면 아틀라스로 실행돼요';
 
-const RING = Object.freeze([...AGENT_IDS]);
+const RING = Object.freeze(['sisyphus', 'hephaestus']);
 const DEFAULT_SESSION_ID = 'default';
 
 const REASON_TEXT = {
@@ -200,6 +200,8 @@ export function createOrchestrator(pi, options = {}) {
   let memories = {};
   let laneOverrides = {};
   let current = 'sisyphus';
+  let returnTo = null;
+  let atlasArmed = false;
   let cursor = initialCursor('sisyphus');
   let sessionId = DEFAULT_SESSION_ID;
   let adapterPresent = false;
@@ -461,14 +463,18 @@ export function createOrchestrator(pi, options = {}) {
     if (switchOptions.source === 'tab' && resolved?.unavailable) {
       const skipped = [];
       let candidate = destination;
-      for (let step = 0; step < AGENT_IDS.length; step += 1) {
+      for (let step = 0; step < RING.length; step += 1) {
         if (!availability[candidate]?.unavailable) break;
         skipped.push(candidate);
         candidate = nextAgent(candidate);
       }
-      if (skipped.length >= AGENT_IDS.length || availability[candidate]?.unavailable) {
+      if (skipped.length >= RING.length || availability[candidate]?.unavailable) {
         notify(ctxRef, `사용할 수 있는 에이전트가 없어요(${skipped.map(id => DISPLAY[id]).join(', ')}).`, 'warning');
         return { switched: false, reason: 'unavailable' };
+      }
+      if (candidate === current) {
+        notify(ctxRef, skipped.map(id => unavailableNotice(id, availability[id].reason)).join(' '), 'info');
+        return { switched: false, reason: 'same' };
       }
       notify(
         ctxRef,
@@ -570,7 +576,11 @@ export function createOrchestrator(pi, options = {}) {
       isStreaming: () => !liveIdle(ctx),
       isSwitchInFlight: () => switching > 0,
       onCycle: () => {
-        void switchTo(nextAgent(current), { source: 'tab' }).catch(() => undefined);
+        const special = current === 'prometheus' || current === 'atlas';
+        const target = special ? (returnTo ?? 'sisyphus') : nextAgent(current);
+        void switchTo(target, { source: 'tab' }).then(() => {
+          if (special) returnTo = null;
+        });
       },
       onThinkingIntent: () => {
         completePending();
@@ -602,6 +612,8 @@ export function createOrchestrator(pi, options = {}) {
         return;
       }
       try {
+        if (current === 'sisyphus' || current === 'hephaestus') returnTo = current;
+        atlasArmed = false;
         await switchTo('atlas', { source: 'submit' });
       } finally {
         hostSubmit?.(text, details);
@@ -610,6 +622,13 @@ export function createOrchestrator(pi, options = {}) {
     }
 
     if (isPlanRequest(text)) {
+      if (!liveIdle(ctx)) {
+        notify(ctx, STREAMING_EXECUTE_NOTICE, 'info');
+        editor?.setText?.(text);
+        return;
+      }
+      if (current === 'sisyphus' || current === 'hephaestus') returnTo = current;
+      if (current !== 'prometheus') await switchTo('prometheus', { source: 'submit' });
       mirror.planRequest(sessionKey());
       hostSubmit?.(text, details);
       return;
@@ -637,6 +656,8 @@ export function createOrchestrator(pi, options = {}) {
 
   async function onSessionStart(event, ctx) {
     ctxRef = ctx;
+    returnTo = null;
+    atlasArmed = false;
     active = isPrimaryMain({ sessionKind: pi.sessionKind, mode: ctx?.mode, hasUI: ctx?.hasUI });
     if (!active) return;
 
@@ -747,6 +768,31 @@ export function createOrchestrator(pi, options = {}) {
     observeUlwExecute();
   }
 
+  async function onAgentEnd(event, ctx) {
+    if (!active || current !== 'atlas' || event?.willRetry === true) return;
+    let works;
+    try {
+      works = JSON.parse(readFileSync(join(ctx.cwd, '.omo', 'boulder.json'), 'utf8')).works;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(works)) return;
+    const matching = works.filter(work => Array.isArray(work?.session_ids)
+      && work.session_ids.includes(`senpi:${sessionKey()}`));
+    if (matching.some(work => work.status === 'active')) {
+      atlasArmed = true;
+      return;
+    }
+    if (!atlasArmed || matching.some(work => !['completed', 'done', 'abandoned'].includes(work.status))) return;
+    const target = returnTo ?? 'sisyphus';
+    ctxRef = ctx;
+    const result = await switchTo(target, { source: 'return' });
+    if (!result.switched) return;
+    returnTo = null;
+    atlasArmed = false;
+    notify(ctx, `실행이 끝나 ${DISPLAY[target]}(으)로 돌아왔어요.`, 'info');
+  }
+
   function onSessionShutdown() {
     if (!active) return;
     completePending();
@@ -761,6 +807,7 @@ export function createOrchestrator(pi, options = {}) {
   pi.on('before_agent_start', onBeforeAgentStart, { previewSafe: true });
   pi.on('tool_call', onToolCall);
   pi.on('tool_result', onToolResult);
+  pi.on('agent_end', onAgentEnd);
   pi.on('session_shutdown', onSessionShutdown);
 
   if (typeof pi.registerCommand === 'function') {

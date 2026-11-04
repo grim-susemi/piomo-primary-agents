@@ -1,9 +1,9 @@
 # piomo-primary-agents
 
-senpi(pi) TUI에서 메인 에이전트 네 명을 Tab 한 번으로 바꿔 쓰게 해 주는 확장입니다.
+senpi(pi) TUI에서 메인 에이전트 네 명을 사용하는 확장입니다.
 Sisyphus, Hephaestus, Prometheus, Atlas가 그 네 명이고, 이 확장은 다음을 합니다.
 
-- 입력창에서 Tab을 누르면 다음 에이전트로 바뀝니다.
+- 입력창에서 Tab을 누르면 Sisyphus와 Hephaestus가 바뀝니다.
 - 입력창 아래에 지금 에이전트, 모델, 추론 단계를 한 줄로 보여 줍니다.
 - 에이전트마다 마지막으로 고른 모델을 기억합니다.
 - Prometheus와 Atlas는 쓸 수 있는 파일과 도구를 제한합니다.
@@ -20,7 +20,9 @@ English: [README.md](README.md) · WinForms 스위처 보관 절차: [docs/winfo
 ### 카드 1. 에이전트 바꾸기: Tab
 
 **할 일:** 입력창에서 Tab을 누릅니다.
-**결과:** Sisyphus → Hephaestus → Prometheus → Atlas 순서로 다음 에이전트가 되고, 아래 라벨이 바로 바뀝니다. 쓸 수 없는 에이전트는 건너뛰고 그 이유를 알려 줍니다.
+**결과:** Sisyphus와 Hephaestus 사이를 전환합니다. Prometheus나 Atlas에서는 이전 메인 에이전트(없으면 Sisyphus)로 돌아갑니다. 쓸 수 없는 에이전트는 건너뛰고 이유를 알려 줍니다.
+
+`/skill:ulw-plan`은 Prometheus로, `/ulw-execute`는 Atlas로 자동 전환합니다. 활성 작업이 끝나면 이전 메인 에이전트로 돌아갑니다. 재개나 다시 불러오기에서는 복귀 대상과 실행 추적을 복원하지 않습니다.
 
 Tab이 **자동완성으로 남는** 경우가 있습니다.
 

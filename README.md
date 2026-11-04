@@ -1,14 +1,16 @@
 # piomo-primary-agents
 
-> **한국어 요약:** senpi TUI에서 Sisyphus, Hephaestus, Prometheus, Atlas 네 메인 에이전트를 Tab으로 바꿔 쓰는 확장입니다. 입력창 아래 라벨, 에이전트별 모델 기억, Prometheus/Atlas 쓰기 제한, 말로 하는 계획 요청을 제공합니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
+> **한국어 요약:** senpi TUI에서 Sisyphus와 Hephaestus를 Tab으로 바꾸고 계획과 실행 요청에 따라 Prometheus와 Atlas로 자동 전환하는 확장입니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
 
-A senpi (pi) extension that lets you switch between four primary agents with one Tab press: Sisyphus, Hephaestus, Prometheus and Atlas. It does nothing in worker (child) sessions; it only acts in the main TUI session.
+A senpi (pi) extension for four primary agents. Tab switches between Sisyphus and Hephaestus; planning and execution requests enter Prometheus and Atlas. It only acts in the main TUI session.
 
 The Korean README is the main guide. This page is the short English version.
 
 ## Use
 
-**Switch with Tab.** Press Tab in the input. You get the next agent in the order Sisyphus, Hephaestus, Prometheus, Atlas, and the label updates. Agents that can't be used are skipped with a notice.
+**Switch with Tab.** Press Tab in the input to toggle between Sisyphus and Hephaestus. From Prometheus or Atlas, Tab returns to the previous main agent, or Sisyphus if none is remembered. An unavailable agent is skipped with a notice.
+
+`/skill:ulw-plan` enters Prometheus and `/ulw-execute` enters Atlas. After active work completes, Atlas returns to the previous main agent. The return target and execution tracking are not restored on resume or reload.
 
 Tab stays a completion key when:
 - the autocomplete list is open;
