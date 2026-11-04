@@ -545,14 +545,14 @@ test('a fresh session starts on the Sisyphus pin and its thinking', async t => {
   assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
 });
 
-test('a fresh session with Sisyphus memory and no pin keeps the host model', async t => {
+test('a fresh session with matching Sisyphus memory starts on the remembered model', async t => {
   const session = makeSession(t, { branch: initialBranch() });
   writeSisyphusMemory(session.sandbox.agentDir);
   await session.start('startup');
 
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
+  assert.equal(session.ctx.model.id, 'lane-daily');
+  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
+  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['medium']);
 });
 
 test('a fresh session with Sisyphus memory and a pin starts on the pin', async t => {

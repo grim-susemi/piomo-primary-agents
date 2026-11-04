@@ -28,6 +28,7 @@ Everything else switches. A trailing dot or a time like `10:30` counts as plain 
 - lanes and pins: `<agentDir>/primary-agents/roster.json` (written by the board only)
 
 Without memory the lane default applies. Changing a pin or resetting memory on the board bumps the roster `rev`, which makes the old memory file stale.
+WinForms main-model changes do not override existing Sisyphus memory unless that memory is reset.
 
 **Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. With the recorded `plan-review-unlock` policy, review remains available after execution and another execution does not relock it. Explicit owner requests and actual plan artifacts remain required. The optional gate adapter is only needed for the earlier execution-locking policy and is not installed automatically. Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
 
