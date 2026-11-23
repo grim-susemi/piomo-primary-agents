@@ -1,20 +1,18 @@
 // Mirror of the installed omo-task gate, keyed by session id.
 //
 // The gate locks plan review after an ulw-execute run. The extension may only
-// reopen it through the owner's own interactive submission: an interactive
-// `/skill:ulw-plan` request (typed by the owner or rewritten by the submit
-// wrap). Extension-originated input is ignored by the gate (probe P5b), so it
-// is never recorded here either.
+// reopen it through the owner's own interactive submission; extension-originated
+// input is ignored by the gate (probe P5b), so it is never recorded here either.
 //
 // Pure: no clocks, no I/O, no SDK. Sequences are monotonic counters, so
 // "newer" is a comparison and never a timestamp.
 //
-//   plan request  <- interactive `/skill:ulw-plan` (typed or rewritten)
-//   ulw-execute   <- interactive `/skill:ulw-execute` or `/ulw-execute`
-//                 <- a read tool_result whose path ends skills/ulw-execute/SKILL.md
+//   ulw-execute <- interactive `/skill:ulw-execute` or `/ulw-execute`
+//               <- a read tool_result whose path ends skills/ulw-execute/SKILL.md
 //
-// A plan request is forgotten on session_shutdown; a process start begins with
-// an empty mirror (the module holds no state of its own).
+// A process start begins with an empty mirror (the module holds no state of its
+// own). Atlas/Prometheus routing no longer consumes a plan counter here; the
+// installed gate owns that bookkeeping.
 
 export const INTERACTIVE_SOURCE = 'interactive';
 
@@ -23,11 +21,6 @@ function commandText(text, command) {
   if (!text.startsWith(command)) return false;
   const rest = text.slice(command.length);
   return rest.length === 0 || rest.startsWith(' ');
-}
-
-/** `/skill:ulw-plan` followed by a space or the end of the text. */
-export function isPlanRequest(text) {
-  return commandText(text, '/skill:ulw-plan');
 }
 
 /** `/skill:ulw-execute` or `/ulw-execute`, followed by a space or the end. */
@@ -52,7 +45,7 @@ export function createGateMirror() {
     const key = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : 'default';
     let state = sessions.get(key);
     if (!state) {
-      state = { plan: 0, execute: 0 };
+      state = { execute: 0 };
       sessions.set(key, state);
     }
     return state;
@@ -61,40 +54,20 @@ export function createGateMirror() {
   return {
     /** Record an interactive submission; anything else is ignored. */
     observeInput(sessionId, text, source = INTERACTIVE_SOURCE) {
-      if (source !== INTERACTIVE_SOURCE) return { plan: false, execute: false };
+      if (source !== INTERACTIVE_SOURCE) return { execute: false };
       const state = stateFor(sessionId);
-      const plan = isPlanRequest(text);
       const execute = isUlwExecute(text);
-      if (plan) {
-        sequence += 1;
-        state.plan = sequence;
-      }
       if (execute) {
         sequence += 1;
         state.execute = sequence;
       }
-      return { plan, execute };
-    },
-
-    planRequest(sessionId) {
-      sequence += 1;
-      stateFor(sessionId).plan = sequence;
-      return sequence;
+      return { execute };
     },
 
     ulwExecute(sessionId) {
       sequence += 1;
       stateFor(sessionId).execute = sequence;
       return sequence;
-    },
-
-    /**
-     * True when this session has no plan request yet (the first Prometheus
-     * message) or when an ulw-execute has not been followed by a plan request.
-     */
-    needsPlanRewrite(sessionId) {
-      const state = stateFor(sessionId);
-      return state.plan === 0 || state.execute > state.plan;
     },
 
     hasUlwExecute(sessionId) {
@@ -115,8 +88,7 @@ export function createGateMirror() {
     },
 
     snapshot(sessionId) {
-      const state = stateFor(sessionId);
-      return { plan: state.plan, execute: state.execute };
+      return { execute: stateFor(sessionId).execute };
     },
   };
 }

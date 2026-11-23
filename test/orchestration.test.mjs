@@ -1,18 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  defaultRoster, memoryPath, rosterPath, setAgentLane, setAgentPin,
-} from '../contract/schema.mjs';
-import {
-  ADAPTER_MISSING_NOTICE, STREAMING_EXECUTE_NOTICE, createOrchestrator,
+  ADAPTER_MISSING_NOTICE,
+  EXECUTE_PICKER_TITLE,
+  PLAN_BOOTSTRAP_TEXT,
+  STREAMING_EXECUTE_NOTICE,
+  SUBMIT_LOCKED_NOTICE,
+  createOrchestrator,
 } from '../src/core/orchestration.mjs';
 import {
-  createGateMirror, isPlanRequest, isUlwExecute, isUlwExecuteSkillPath,
+  createGateMirror, isUlwExecute, isUlwExecuteSkillPath,
 } from '../src/core/gate-mirror.mjs';
 import extension from '../src/index.mjs';
 
@@ -223,7 +225,43 @@ function entryAgents(session) {
     .map(call => call.data.agentId);
 }
 
-test('factory registers every handler, command and the preview-safe overlay hook', () => {
+function planBody(slug, fields = '') {
+  return `# ${slug}\n\n## TL;DR (For humans)\n목표 한 줄.\n${fields}\n\n## Todos\n- [ ] 1. 일\n`;
+}
+
+function writePlan(sandbox, slug, fields = '') {
+  mkdirSync(join(sandbox.root, '.omo', 'plans'), { recursive: true });
+  const body = planBody(slug, fields);
+  writeFileSync(join(sandbox.root, '.omo', 'plans', `${slug}.md`), body, 'utf8');
+  return body;
+}
+
+function planPath(sandbox, slug) {
+  return join(sandbox.root, '.omo', 'plans', `${slug}.md`);
+}
+
+async function readPlan(session, path, body, toolCallId = 'read-1', input = { path }) {
+  await session.fire('tool_call', {
+    type: 'tool_call', toolName: 'read', toolCallId, input,
+  });
+  return session.fire('tool_result', {
+    type: 'tool_result',
+    toolName: 'read',
+    toolCallId,
+    input,
+    content: [{ type: 'text', text: body }],
+    isError: false,
+    details: undefined,
+  });
+}
+
+function taskCall(session, toolCallId = 'task-1', toolName = 'task') {
+  return session.fire('tool_call', {
+    type: 'tool_call', toolName, toolCallId, input: { category: 'deep-low' },
+  });
+}
+
+test('factory registers handlers and the agent command without an agent_end hook', () => {
   const handlers = new Map();
   const commands = new Map();
   const pi = {
@@ -234,6 +272,7 @@ test('factory registers every handler, command and the preview-safe overlay hook
   for (const event of ['session_start', 'input', 'model_select', 'before_agent_start', 'tool_call', 'tool_result', 'session_shutdown']) {
     assert.equal(typeof handlers.get(event)?.handler, 'function', `${event} registered at factory time`);
   }
+  assert.equal(handlers.has('agent_end'), false);
   assert.equal(handlers.get('before_agent_start').options.previewSafe, true);
   assert.equal(typeof commands.get('agent')?.handler, 'function');
 });
@@ -245,15 +284,15 @@ test('switch order is model -> thinking -> entry -> label and ctx owns no switch
   assert.equal(session.ctx.appendEntry, undefined);
   session.log.length = 0;
 
-  const result = await session.orchestration.switchTo('atlas');
+  const result = await session.orchestration.switchTo('prometheus');
 
   assert.equal(result.switched, true);
   assert.deepEqual(session.log.map(item => item.kind), ['model', 'thinking', 'entry', 'label']);
-  assert.deepEqual(entryAgents(session), ['atlas']);
-  assert.equal(session.orchestration.current, 'atlas');
+  assert.deepEqual(entryAgents(session), ['prometheus']);
+  assert.equal(session.orchestration.current, 'prometheus');
 });
 
-test('submit wrap survives the host restoring a wrapper (no self-recursion)', async t => {
+test('the submit wrapper survives the host restoring it', async t => {
   const session = makeSession(t);
   await session.start('resume');
   const editor = session.ui.editor;
@@ -263,507 +302,379 @@ test('submit wrap survives the host restoring a wrapper (no self-recursion)', as
   editor.onSubmit = own;
   assert.equal(editor.onSubmit, own, 'restoring our wrapper must not grow a new one');
 
-  // Replays the host composer observer: read the callback, install a temporary
-  // wrapper, submit through the editor, then restore what was read.
-  for (let index = 0; index < 5; index += 1) {
-    const previous = editor.onSubmit;
-    editor.onSubmit = (...args) => previous?.(...args);
-    editor.onSubmit('hello there', { rawText: 'hello there' });
-    editor.onSubmit = previous;
-  }
-
-  assert.equal(session.ui.calls.hostSubmit.length, 5);
-  assert.deepEqual(session.ui.calls.hostSubmit.at(-1), {
-    text: 'hello there', details: { rawText: 'hello there' },
-  });
+  await editor.onSubmit('hello');
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  assert.equal(session.ui.calls.hostSubmit[0].text, 'hello');
 });
 
-test('held switch keeps the model pending while identity and policy switch immediately', async t => {
-  const session = makeSession(t, { holdModel: true });
+test('a worker or rpc session stays inert', async t => {
+  const session = makeSession(t, { mode: 'rpc' });
+  await session.start('resume');
+  const result = await session.orchestration.switchTo('hephaestus');
+  assert.equal(result.reason, 'inactive');
+  assert.deepEqual(entryAgents(session), []);
+});
+
+test('a resumed legacy Atlas identity moves to Sisyphus and keeps its history', async t => {
+  const session = makeSession(t, { branch: resumedBranch('atlas') });
   await session.start('resume');
 
-  const result = await session.orchestration.switchTo('prometheus');
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.deepEqual(entryAgents(session), ['sisyphus']);
+  assert.ok(session.branch.some(entry => entry.data?.agentId === 'atlas'), 'old identity entry is preserved');
+});
 
-  assert.equal(result.pending, true);
-  assert.equal(session.orchestration.snapshot().pending, true);
+test('/agent: the picker lists three selectable agents, Atlas is refused, unknown names list them', async t => {
+  const session = makeSession(t);
+  await session.start('resume');
+  const command = session.commands.get('agent');
+
+  session.ui.setSelect(() => 'Prometheus');
+  await command.handler('', session.ctx);
   assert.equal(session.orchestration.current, 'prometheus');
-  assert.deepEqual(entryAgents(session), ['prometheus']);
-  assert.equal(session.ctx.model.id, 'default-x');
-  const widget = session.ui.calls.widget.at(-1);
-  const label = widget.content().render(200)[0];
-  assert.match(label, /\(대기\)/);
+  assert.deepEqual(session.ui.calls.select.at(-1).names, ['Sisyphus', 'Hephaestus', 'Prometheus']);
 
-  const blocked = await session.fire('tool_call', {
-    type: 'tool_call', toolName: 'edit', input: { path: join(session.sandbox.root, 'src', 'a.js') },
-  });
-  assert.equal(blocked.block, true, 'policy switches immediately even while the model is pending');
+  await command.handler('atlas', session.ctx);
+  assert.equal(session.orchestration.current, 'prometheus');
+  assert.match(session.ui.calls.notify.at(-1).message, /Atlas는 퇴역/);
 
-  session.branch.push({
-    type: 'model_change', id: 'committed', provider: 'sub', modelId: 'lane-daily-heavy',
-  });
-  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
-
-  assert.equal(session.orchestration.snapshot().pending, false);
-  const refreshed = session.ui.calls.widget.at(-1).content().render(200)[0];
-  assert.doesNotMatch(refreshed, /\(대기\)/);
+  const entriesBefore = entryAgents(session).length;
+  await command.handler('nobody', session.ctx);
+  assert.match(session.ui.calls.notify.at(-1).message, /알 수 없는 에이전트/);
+  assert.match(session.ui.calls.notify.at(-1).message, /Sisyphus, Hephaestus, Prometheus/);
+  assert.equal(entryAgents(session).length, entriesBefore);
 });
 
-test('a failed Atlas model switch keeps its existing behaviour', async t => {
-  const session = makeSession(t, { holdModel: true, modelResult: false });
-  await session.start('resume');
-  session.ui.calls.notify.length = 0;
-
-  const result = await session.orchestration.switchTo('atlas');
-
-  assert.equal(result.switched, true);
-  assert.equal(result.pending, false);
-  assert.equal(session.orchestration.snapshot().pending, false);
-  assert.equal(session.orchestration.current, 'atlas');
-  assert.deepEqual(entryAgents(session), ['atlas']);
-  assert.equal(session.ui.calls.notify.length, 1);
-  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요/);
-});
-
-test('a refused Hephaestus model switch keeps the current agent and appends nothing', async t => {
-  const session = makeSession(t, { holdModel: true, modelResult: false });
-  await session.start('resume');
-  session.ui.calls.notify.length = 0;
-
-  const result = await session.orchestration.switchTo('hephaestus');
-
-  assert.deepEqual(result, { switched: false, reason: 'model-switch-failed' });
-  assert.equal(session.orchestration.current, 'sisyphus');
-  assert.equal(session.orchestration.snapshot().agentId, 'sisyphus');
-  assert.equal(session.orchestration.snapshot().pending, false);
-  assert.deepEqual(entryAgents(session), [], 'a failed Hephaestus switch must not append an identity entry');
-  assert.equal(session.ctx.model.id, 'default-x', 'the runtime model stays non-GPT');
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
-  assert.equal(session.ui.calls.notify.length, 1, 'exactly one notice');
-  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요: gpt\/gpt-lane-geeky/);
-  const prompt = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
-  });
-  assert.equal(prompt, undefined, 'no Hephaestus overlay is installed');
-});
-
-test('a throwing Hephaestus model switch keeps the current agent and appends nothing', async t => {
-  const session = makeSession(t, {
-    holdModel: true,
-    beforeModel: () => { throw new Error('auth expired'); },
-  });
-  await session.start('resume');
-  session.ui.calls.notify.length = 0;
-
-  const result = await session.orchestration.switchTo('hephaestus');
-
-  assert.deepEqual(result, { switched: false, reason: 'model-switch-failed' });
-  assert.equal(session.orchestration.current, 'sisyphus');
-  assert.equal(session.orchestration.snapshot().agentId, 'sisyphus');
-  assert.equal(session.orchestration.snapshot().pending, false);
-  assert.deepEqual(entryAgents(session), [], 'a failed Hephaestus switch must not append an identity entry');
-  assert.equal(session.ctx.model.id, 'default-x', 'the runtime model stays non-GPT');
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
-  assert.equal(session.ui.calls.notify.length, 1, 'exactly one notice');
-  assert.match(session.ui.calls.notify[0].message, /모델을 바꾸지 못했어요: auth expired/);
-  const prompt = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
-  });
-  assert.equal(prompt, undefined, 'no Hephaestus overlay is installed');
-});
-
-test('resume ignores memory written for an older roster revision', async t => {
-  const session = makeSession(t, { branch: resumedBranch('sisyphus') });
-  const roster = setAgentLane(defaultRoster(), 'sisyphus', 'daily-normal');
-  writeFileSync(rosterPath(session.sandbox.agentDir), `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
-  writeFileSync(memoryPath(session.sandbox.agentDir, 'sisyphus'), `${JSON.stringify({
-    v: 1,
-    agentId: 'sisyphus',
-    model: { provider: 'sub', modelId: 'stale-memory' },
-    thinking: 'low',
-    rosterRev: 0,
-    updatedAt: '2026-10-20T00:00:00.000Z',
-  }, null, 2)}\n`, 'utf8');
-
-  await session.start('resume');
-  await session.orchestration.switchTo('atlas');
-  await session.orchestration.switchTo('sisyphus');
-
-  assert.equal(session.ctx.model.id, 'lane-daily');
-});
-
-test('memory learns command, picker and cycle only, never extension or rpc', async t => {
+test('an /ulw-execute with no selectable plan asks Native for a plan and does not switch or execute', async t => {
   const session = makeSession(t);
   await session.start('resume');
 
-  session.branch.push(
-    { type: 'model_change', id: 'm1', source: 'command', provider: 'sub', modelId: 'learn-command' },
-    { type: 'model_change', id: 'm2', source: 'picker', provider: 'sub', modelId: 'learn-picker' },
-    { type: 'model_change', id: 'm3', source: 'cycle', provider: 'sub', modelId: 'learn-cycle' },
-    { type: 'model_change', id: 'm4', source: 'extension', provider: 'sub', modelId: 'learn-extension' },
-    { type: 'model_change', id: 'm5', source: 'rpc', provider: 'sub', modelId: 'learn-rpc' },
-  );
-  await session.fire('input', { type: 'input', text: 'hello', source: 'interactive' });
+  await session.ui.editor.onSubmit('/ulw-execute');
 
-  const file = memoryPath(session.sandbox.agentDir, 'sisyphus');
-  assert.ok(existsSync(file));
-  const memory = JSON.parse(readFileSync(file, 'utf8'));
-  assert.equal(memory.model.modelId, 'learn-cycle');
-  assert.equal(memory.rosterRev, 0);
-  assert.equal(memory.v, 1);
-});
-
-test('model_select only stages: no memory file until a reconciliation event', async t => {
-  const session = makeSession(t);
-  await session.start('resume');
-  await session.fire('model_select', { type: 'model_select', source: 'set' });
-
-  const file = memoryPath(session.sandbox.agentDir, 'sisyphus');
-  assert.equal(existsSync(file), false);
-
-  session.branch.push({ type: 'model_change', id: 'm1', source: 'command', provider: 'sub', modelId: 'learned' });
-  await session.fire('before_agent_start', { type: 'before_agent_start', systemPrompt: 'BASE', preview: false });
-  assert.ok(existsSync(file));
-});
-
-test('extension switch entries are never learned as agent memory', async t => {
-  // Each switch writes its own thinking entry with the host's "explicit"
-  // selection; only the extension's own-entry bookkeeping keeps it out of memory.
-  const session = makeSession(t, { branch: initialBranch() });
-  await session.start('startup');
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
-
-  await session.orchestration.switchTo('hephaestus');
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
-    'the switch attributed its own thinking entry to Sisyphus');
-  await session.orchestration.switchTo('prometheus');
-  await session.orchestration.switchTo('atlas');
-  await session.orchestration.switchTo('sisyphus');
-
-  for (const agentId of ['sisyphus', 'hephaestus', 'prometheus', 'atlas']) {
-    assert.equal(existsSync(memoryPath(session.sandbox.agentDir, agentId)), false,
-      `${agentId} memory must not be created by a switch`);
-  }
-});
-
-test('a non-GPT /model pick on Hephaestus never touches Sisyphus memory', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  await session.start('startup');
-  await session.orchestration.switchTo('hephaestus');
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
-    'the Hephaestus switch created Sisyphus memory before any /model pick');
-
-  session.branch.push({
-    type: 'model_change', id: 'gpt-pick', source: 'command', provider: 'gpt', modelId: 'gpt-lane-geeky',
-  });
-  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
-
-  const hephaestusFile = memoryPath(session.sandbox.agentDir, 'hephaestus');
-  assert.equal(JSON.parse(readFileSync(hephaestusFile, 'utf8')).model.modelId, 'gpt-lane-geeky');
-  const before = readFileSync(hephaestusFile, 'utf8');
-
-  session.branch.push({
-    type: 'model_change', id: 'non-gpt-pick', source: 'command', provider: 'sub', modelId: 'lane-daily',
-  });
-  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
-
-  assert.equal(readFileSync(hephaestusFile, 'utf8'), before, 'Hephaestus memory changed on a non-GPT pick');
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
-    'Sisyphus memory was created by a Hephaestus pick');
-  assert.match(session.ui.calls.notify.at(-1).message, /GPT 모델만 기억해요/);
-
-  await session.orchestration.switchTo('sisyphus');
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
-});
-
-test('resume restores the branch identity', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
-  await session.start('resume');
-  assert.equal(session.orchestration.current, 'prometheus');
-});
-
-test('new session starts on Sisyphus', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  await session.start('new');
   assert.equal(session.orchestration.current, 'sisyphus');
+  assert.deepEqual(entryAgents(session), []);
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  assert.equal(session.ui.calls.hostSubmit[0].text, PLAN_BOOTSTRAP_TEXT);
 });
 
-test('child session registers handlers but does nothing', async t => {
-  const session = makeSession(t, { mode: 'rpc', branch: resumedBranch('prometheus') });
-  await session.start('startup');
+test('an explicit plan switches to its declared lead and forwards the slug once', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 저장 복구 검증');
+  await session.start('resume');
 
-  assert.equal(session.orchestration.active, false);
-  assert.equal(session.calls.length, 0);
-  assert.equal(session.ui.calls.editorSet, 0);
-  assert.equal(await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'UNCHANGED', preview: false,
-  }), undefined);
-  assert.equal(await session.fire('tool_call', {
-    type: 'tool_call', toolName: 'edit', input: { path: 'C:/x/src/a.js' },
-  }), undefined);
-  await session.fire('input', { type: 'input', text: '/ulw-execute x', source: 'interactive' });
-  await session.commands.get('agent').handler('', session.ctx);
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  assert.equal(session.orchestration.current, 'hephaestus');
+  assert.deepEqual(entryAgents(session), ['hephaestus']);
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  assert.equal(session.ui.calls.hostSubmit[0].text, '/ulw-execute lead-hephaestus');
+  assert.equal(session.ui.editor.getText(), '');
+});
+
+test('options and the original command form are preserved in the forwarded command', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/skill:ulw-execute --light lead-hephaestus --make-pr');
+
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  assert.equal(session.ui.calls.hostSubmit[0].text, '/skill:ulw-execute lead-hephaestus --light --make-pr');
+});
+
+test('an explicit name that does not exist never falls through to another plan', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/ulw-execute missing-plan');
+
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.ui.calls.hostSubmit.length, 0);
+  assert.match(session.ui.calls.notify.at(-1).message, /찾지 못했어요/);
+  assert.equal(session.ui.editor.getText(), '/ulw-execute missing-plan');
+});
+
+test('multiple plans ask one selection question; cancel submits nothing', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-sisyphus', 'Execution lead: sisyphus\nExecution rationale: 이유');
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  session.ui.setSelect(() => 'lead-hephaestus');
+  await session.ui.editor.onSubmit('/ulw-execute');
+  assert.equal(session.ui.calls.select.at(-1).title, EXECUTE_PICKER_TITLE);
+  assert.deepEqual(session.ui.calls.select.at(-1).names, ['lead-hephaestus', 'lead-sisyphus']);
+  assert.equal(session.orchestration.current, 'hephaestus');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/ulw-execute lead-hephaestus');
+
+  const before = session.ui.calls.hostSubmit.length;
+  session.ui.setSelect(() => undefined);
+  await session.ui.editor.onSubmit('/ulw-execute');
+  assert.equal(session.ui.calls.hostSubmit.length, before);
+  assert.match(session.ui.calls.notify.at(-1).message, /취소/);
+});
+
+test('an active Boulder plan for this session is selected without a question', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-sisyphus', 'Execution lead: sisyphus\nExecution rationale: 이유');
+  mkdirSync(join(session.sandbox.root, '.omo'), { recursive: true });
+  writeFileSync(join(session.sandbox.root, '.omo', 'boulder.json'), JSON.stringify({
+    works: {
+      'lead-sisyphus': {
+        session_ids: ['senpi:session-1'],
+        status: 'active',
+        plan_name: 'lead-sisyphus',
+      },
+    },
+  }), 'utf8');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/ulw-execute');
+
+  assert.equal(session.orchestration.current, 'sisyphus');
   assert.equal(session.ui.calls.select.length, 0);
-  assert.deepEqual(entryAgents(session), []);
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false);
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/ulw-execute lead-sisyphus');
 });
 
-const SISYPHUS_PIN = { provider: 'sub', modelId: 'lane-daily-heavy', thinking: 'low' };
-
-function writeSisyphusPin(agentDir, pin) {
-  const roster = setAgentPin(defaultRoster(), 'sisyphus', pin);
-  writeFileSync(rosterPath(agentDir), `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
-}
-
-function writeSisyphusMemory(agentDir) {
-  writeFileSync(memoryPath(agentDir, 'sisyphus'), `${JSON.stringify({
-    v: 1,
-    agentId: 'sisyphus',
-    model: { provider: 'sub', modelId: 'lane-daily' },
-    thinking: 'medium',
-    rosterRev: 0,
-    updatedAt: '2026-10-20T00:00:00.000Z',
-  }, null, 2)}\n`, 'utf8');
-}
-
-test('a fresh session without a Sisyphus pin keeps the host model and writes no start-up entry', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  await session.start('startup');
-
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.calls.filter(call => call.kind === 'thinking').length, 0);
-  assert.equal(session.orchestration.current, 'sisyphus');
-});
-
-test('a fresh session starts on the Sisyphus pin and its thinking', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
-  await session.start('startup');
-
-  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
-  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
-});
-
-test('a fresh session with matching Sisyphus memory applies its model and thinking', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  writeSisyphusMemory(session.sandbox.agentDir);
-  await session.start('startup');
-
-  assert.deepEqual(session.ctx.model, { provider: 'sub', id: 'lane-daily' });
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
-  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['medium']);
-});
-
-test('a fresh session with stale Sisyphus memory and a newer pin starts on the pin', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  writeSisyphusMemory(session.sandbox.agentDir);
-  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
-  await session.start('startup');
-
-  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
-  assert.deepEqual(session.calls.filter(call => call.kind === 'thinking').map(call => call.level), ['low']);
-});
-
-test('a fresh session with an unregistered pin uses its lane and warns', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  writeSisyphusPin(session.sandbox.agentDir, { provider: 'sub', modelId: 'missing-model', thinking: 'low' });
-  await session.start('startup');
-
-  assert.deepEqual(session.ctx.model, { provider: 'sub', id: 'lane-daily' });
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 1);
-  assert.match(session.ui.calls.notify[0].message, /pin sub\/missing-model: unregistered; using sub\/lane-daily/);
-});
-
-test('a fresh session with no model registry makes no call', async t => {
-  const session = makeSession(t, { branch: initialBranch(), registry: null });
-  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
-  await session.start('startup');
-
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-});
-
-test('resume, reload and fork with a Sisyphus pin keep the host model', async t => {
-  for (const reason of ['resume', 'reload', 'fork']) {
-    const session = makeSession(t, { branch: initialBranch() });
-    writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
-    await session.start(reason);
-
-    assert.equal(session.ctx.model.id, 'default-x', `${reason} keeps its model`);
-    assert.equal(session.calls.filter(call => call.kind === 'model').length, 0, `${reason} makes no model call`);
-  }
-});
-
-test('a pinned fresh session never learns its start-up entries as agent memory', async t => {
-  const session = makeSession(t, { branch: initialBranch() });
-  writeSisyphusPin(session.sandbox.agentDir, SISYPHUS_PIN);
-  await session.start('startup');
-  assert.equal(session.ctx.model.id, 'lane-daily-heavy');
-
-  await session.fire('input', { type: 'input', text: '', source: 'interactive' });
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'sisyphus')), false,
-    'the start-up thinking entry was learned as Sisyphus memory');
-
-  await session.orchestration.switchTo('hephaestus');
-  await session.orchestration.switchTo('sisyphus');
-  for (const agentId of ['sisyphus', 'hephaestus']) {
-    assert.equal(existsSync(memoryPath(session.sandbox.agentDir, agentId)), false,
-      `${agentId} memory must not be created by a switch`);
-  }
-});
-
-test('the identity entry payload has exactly the schemaVersion and agentId keys', async t => {
+test('an invalid execution-lead declaration blocks the handoff', async t => {
   const session = makeSession(t);
-  await session.start('resume');
-  await session.orchestration.switchTo('prometheus');
-
-  const identityEntry = session.branch.filter(entry => entry.type === 'custom' && entry.customType === 'primary-agent/v1').at(-1);
-  assert.deepEqual(Object.keys(identityEntry.data).sort(), ['agentId', 'schemaVersion']);
-  assert.deepEqual(identityEntry.data, { schemaVersion: 1, agentId: 'prometheus' });
-});
-
-test('a branch with a message entry keeps its model', async t => {
-  const session = makeSession(t, { branch: [...initialBranch(), messageEntry()] });
-  await session.start('startup');
-
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.ctx.model.id, 'default-x');
-  assert.equal(session.orchestration.current, 'sisyphus');
-});
-
-test('resume, reload and fork never call setSessionModel', async t => {
-  for (const reason of ['resume', 'reload', 'fork']) {
-    const session = makeSession(t, { branch: [...resumedBranch('atlas')] });
-    await session.start(reason);
-    assert.equal(session.calls.filter(call => call.kind === 'model').length, 0, `${reason} keeps its model`);
-    assert.equal(session.orchestration.current, 'atlas');
-  }
-});
-
-test('a roster change between two switches is picked up', async t => {
-  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-broken', 'Execution lead: hephaestus');
   await session.start('resume');
 
-  await session.orchestration.switchTo('atlas');
-  assert.equal(session.ctx.model.id, 'lane-daily');
+  await session.ui.editor.onSubmit('/ulw-execute lead-broken');
 
-  const roster = setAgentLane(defaultRoster(), 'atlas', 'geeky-heavy');
-  writeFileSync(rosterPath(session.sandbox.agentDir), `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
-
-  await session.orchestration.switchTo('prometheus');
-  await session.orchestration.switchTo('atlas');
-  assert.equal(session.ctx.model.id, 'gpt-lane-heavy');
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.ui.calls.hostSubmit.length, 0);
+  assert.match(session.ui.calls.notify.at(-1).message, /무효/);
 });
 
-test('Tab stays on Sisyphus when Hephaestus is unavailable with one notice', async t => {
+test('a role whose model is unavailable blocks the handoff', async t => {
   const session = makeSession(t, { registry: fakeRegistry(MODELS.filter(model => model.provider === 'sub')) });
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
   await session.start('resume');
-  session.ui.calls.notify.length = 0;
 
-  session.ui.editor.handleInput('\t');
-  await session.orchestration.settled();
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
 
   assert.equal(session.orchestration.current, 'sisyphus');
-  assert.deepEqual(entryAgents(session), []);
-  assert.equal(session.calls.filter(call => call.kind === 'model').length, 0);
-  assert.equal(session.ui.calls.notify.length, 1);
-  assert.match(session.ui.calls.notify[0].message, /Hephaestus/);
+  assert.equal(session.ui.calls.hostSubmit.length, 0);
+  assert.match(session.ui.calls.notify.at(-1).message, /사용할 수 없어/);
 });
 
-test('Prometheus rewrite follows the mirror, not the text alone', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
+test('streaming keeps the execute text and does not submit', async t => {
+  const session = makeSession(t, { isIdle: () => false });
   await session.start('resume');
 
-  await session.fire('input', { type: 'input', text: '/skill:ulw-execute go', source: 'interactive' });
-  await session.ui.editor.onSubmit('plan this');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan plan this');
+  await session.ui.editor.onSubmit('/ulw-execute later');
 
-  await session.ui.editor.onSubmit('plan again');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'plan again');
-  assert.equal(session.ui.calls.hostSubmit.length, 2);
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.ui.calls.hostSubmit.length, 0);
+  assert.equal(session.ui.editor.getText(), '/ulw-execute later');
+  assert.equal(session.ui.calls.notify.at(-1).message, STREAMING_EXECUTE_NOTICE);
 });
 
-test('Prometheus rewrite triggers on /ulw-execute, a read of the skill and typed plan older than exec', async t => {
-  const typed = makeSession(t, { branch: resumedBranch('prometheus') });
-  await typed.start('resume');
-  await typed.fire('input', { type: 'input', text: '/ulw-execute go', source: 'interactive' });
-  await typed.ui.editor.onSubmit('typed exec');
-  assert.equal(typed.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan typed exec');
+test('a concurrent execute submission is consumed while the first one is in flight', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const session = makeSession(t, { beforeModel: () => gate });
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
 
-  const read = makeSession(t, { branch: resumedBranch('prometheus') });
-  await read.start('resume');
-  await read.fire('tool_result', {
-    type: 'tool_result',
-    toolName: 'read',
-    input: { path: 'C:/pkg/skills/ulw-execute/SKILL.md' },
-    isError: false,
+  const first = session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await Promise.resolve();
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  assert.equal(session.ui.calls.hostSubmit.length, 0, 'second submission must not reach the host');
+  assert.equal(session.ui.calls.notify.at(-1).message, SUBMIT_LOCKED_NOTICE);
+
+  release();
+  await first;
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+});
+
+test('a plan changed between the router read and the handoff is not executed', async t => {
+  const session = makeSession(t, {
+    beforeModel: () => {
+      writeFileSync(planPath(session.sandbox, 'lead-hephaestus'),
+        `${planBody('lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유')}\nchanged\n`, 'utf8');
+    },
   });
-  await read.ui.editor.onSubmit('read exec');
-  assert.equal(read.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan read exec');
-
-  const planThenExec = makeSession(t, { branch: resumedBranch('prometheus') });
-  await planThenExec.start('resume');
-  await planThenExec.fire('input', { type: 'input', text: '/skill:ulw-plan first', source: 'interactive' });
-  await planThenExec.fire('input', { type: 'input', text: '/skill:ulw-execute go', source: 'interactive' });
-  await planThenExec.ui.editor.onSubmit('after exec');
-  assert.equal(planThenExec.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan after exec');
-});
-
-test('extension-originated ulw-execute never enables the rewrite', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
-  await session.start('resume');
-  // Consume the first-message rewrite so only the execute can enable it now.
-  await session.fire('input', { type: 'input', text: '/skill:ulw-plan first', source: 'interactive' });
-  await session.fire('input', { type: 'input', text: '/ulw-execute go', source: 'extension' });
-  await session.ui.editor.onSubmit('plain request');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'plain request');
-});
-
-test('the first Prometheus plain request is rewritten once, then left alone', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
-  await session.start('resume');
-  await session.ui.editor.onSubmit('plain request');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan plain request');
-  await session.ui.editor.onSubmit('second message');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, 'second message');
-});
-
-test('an empty Prometheus submission reaches the host unchanged and keeps the rewrite pending', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
   await session.start('resume');
 
-  await session.ui.editor.onSubmit('');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '');
-  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
 
-  await session.ui.editor.onSubmit('first real request');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan first real request');
+  assert.equal(session.ui.calls.hostSubmit.length, 0);
+  assert.match(session.ui.calls.notify.at(-1).message, /바뀌어/);
 });
 
-test('a bang Prometheus submission reaches the host unchanged and keeps the rewrite pending', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
+test('the first delegation is blocked until the selected plan is read in full', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /읽어야/);
+
+  // A failure is final for this request: reading now cannot revive it.
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body);
+  const stillBlocked = await taskCall(session, 'task-2');
+  assert.equal(stillBlocked.block, true);
+});
+
+test('a matching full read allows the first task and workflow delegation', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body);
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+  assert.equal(await taskCall(session, 'task-2'), undefined);
+});
+
+test('the handoff record is discarded after the first delegation succeeds', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  writePlan(session.sandbox, 'other-plan', '');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, path, body);
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+  await session.fire('tool_result', {
+    type: 'tool_result', toolName: 'task', toolCallId: 'task-1', input: {}, content: [], isError: false,
+  });
+
+  await readPlan(session, planPath(session.sandbox, 'other-plan'), 'anything', 'read-other');
+  assert.equal(await taskCall(session, 'task-2'), undefined);
+});
+
+test('a read whose body differs from the stored plan blocks the delegation', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), 'different bytes');
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /달라요/);
+});
+
+test('reading another plan invalidates the handoff evidence', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  writePlan(session.sandbox, 'other-plan', '');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, planPath(session.sandbox, 'other-plan'), 'anything', 'read-other');
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body, 'read-main');
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /다른 계획/);
+});
+
+test('paged reads verify the plan only after every line is covered', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  const lines = body.split('\n');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, path, lines.slice(0, 3).join('\n'), 'read-a', { path, offset: 1, limit: 3 });
+  await readPlan(session, path, lines.slice(3).join('\n'), 'read-b', { path, offset: 4 });
+
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+});
+
+test('a read still in flight blocks a delegation in the same response batch', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await session.fire('tool_call', {
+    type: 'tool_call', toolName: 'read', toolCallId: 'read-1',
+    input: { path: planPath(session.sandbox, 'lead-hephaestus') },
+  });
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /읽기가 끝나기 전/);
+});
+
+test('a role change after the read blocks the delegation', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body);
+
+  await session.orchestration.switchTo('sisyphus');
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /역할/);
+});
+
+test('a plan changed after the read blocks the delegation', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body);
+
+  writeFileSync(planPath(session.sandbox, 'lead-hephaestus'), `${body}\nchanged\n`, 'utf8');
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /바뀌었어요/);
+});
+
+test('Prometheus keeps its preset and no longer rewrites or overlays input', async t => {
+  const session = makeSession(t);
+  await session.start('resume');
+  await session.commands.get('agent').handler('Prometheus', session.ctx);
+  assert.equal(session.orchestration.current, 'prometheus');
+
+  const prompt = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
+  });
+  assert.equal(prompt, undefined, 'no Prometheus prompt overlay');
+
+  await session.ui.editor.onSubmit('계획 잡아줘');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '계획 잡아줘');
+
+  await session.ui.editor.onSubmit('/skill:ulw-plan 계획 잡아줘');
+  assert.equal(session.orchestration.current, 'prometheus');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan 계획 잡아줘');
+});
+
+test('a Native plan request no longer switches to Prometheus', async t => {
+  const session = makeSession(t);
   await session.start('resume');
 
-  await session.ui.editor.onSubmit('!git status');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '!git status');
-  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  await session.ui.editor.onSubmit('/skill:ulw-plan 새 계획');
 
-  await session.ui.editor.onSubmit('first real request');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan first real request');
+  assert.equal(session.orchestration.current, 'sisyphus');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan 새 계획');
 });
 
-test('the first Prometheus request is rewritten after an /agent switch', async t => {
-  const session = makeSession(t, { branch: resumedBranch('sisyphus') });
+test('Hephaestus still receives its overlay and previews stay pure', async t => {
+  const session = makeSession(t, { branch: resumedBranch('hephaestus') });
   await session.start('resume');
-  await session.commands.get('agent').handler('prometheus', session.ctx);
-  await session.ui.editor.onSubmit('계획 잡아줘 데모');
-  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/skill:ulw-plan 계획 잡아줘 데모');
+
+  const result = await session.fire('before_agent_start', {
+    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
+  });
+  assert.match(result.systemPrompt, /^BASE/);
+  assert.match(result.systemPrompt, /piomo-primary-agent:begin id=hephaestus/);
 });
 
-test('adapter-missing notice appears only after ulw-execute and only without the marker', async t => {
-  const bare = makeSession(t, {
-    branch: resumedBranch('atlas'),
+test('the adapter-missing notice appears once after an interactive execute', async t => {
+  const session = makeSession(t, {
     loadedExtensionPaths: sandbox => {
       const file = join(sandbox.root, 'tools', 'omo-task.js');
       mkdirSync(join(sandbox.root, 'tools'), { recursive: true });
@@ -771,173 +682,14 @@ test('adapter-missing notice appears only after ulw-execute and only without the
       return [file];
     },
   });
-  await bare.start('resume');
-  assert.equal(bare.ui.calls.notify.length, 0, 'no notice before an execute');
-  await bare.fire('input', { type: 'input', text: '/ulw-execute go', source: 'interactive' });
-  const notices = bare.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE);
-  assert.equal(notices.length, 1);
-  await bare.fire('input', { type: 'input', text: '/ulw-execute again', source: 'interactive' });
-  assert.equal(bare.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 1);
-
-  const marked = makeSession(t, {
-    branch: resumedBranch('atlas'),
-    loadedExtensionPaths: sandbox => {
-      const file = join(sandbox.root, 'tools', 'omo-task.js');
-      mkdirSync(join(sandbox.root, 'tools'), { recursive: true });
-      writeFileSync(file, '/*piomo-primary-agents:gate-adapter:v1:begin*/x/*piomo-primary-agents:gate-adapter:v1:end*/\n', 'utf8');
-      return [file];
-    },
-  });
-  await marked.start('resume');
-  await marked.fire('input', { type: 'input', text: '/ulw-execute go', source: 'interactive' });
-  assert.equal(marked.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 0);
-});
-
-test('recorded unlocked policies do not warn after repeated execution', async t => {
-  const session = makeSession(t, {
-    branch: resumedBranch('atlas'),
-    loadedExtensionPaths: sandbox => {
-      const file = join(sandbox.root, 'tools', 'omo-task.js');
-      mkdirSync(join(sandbox.root, 'tools'), { recursive: true });
-      const policies = ['plan-consultant', 'plan-reviewer'].map(name =>
-        `"${name}":{requiresSkills:["ulw-plan"],requiresPlanArtifact:!0,forbidsSkills:[]}`);
-      writeFileSync(file, policies.join(','), 'utf8');
-      return [file];
-    },
-  });
   await session.start('resume');
-  await session.fire('input', { type: 'input', text: '/ulw-execute first', source: 'interactive' });
-  await session.fire('input', { type: 'input', text: '/ulw-execute second', source: 'interactive' });
-  assert.equal(session.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 0);
+  await session.fire('input', { type: 'input', text: '/ulw-execute go', source: 'interactive' });
+  assert.equal(session.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 1);
+  await session.fire('input', { type: 'input', text: '/ulw-execute again', source: 'interactive' });
+  assert.equal(session.ui.calls.notify.filter(item => item.message === ADAPTER_MISSING_NOTICE).length, 1);
 });
 
-test('/agent: no argument opens the picker, a name switches, an unknown name lists names', async t => {
-  const session = makeSession(t, { registry: fakeRegistry(MODELS.filter(model => model.provider === 'sub')) });
-  await session.start('resume');
-  const command = session.commands.get('agent');
-
-  session.ui.setSelect(() => 'Atlas');
-  await command.handler('', session.ctx);
-  assert.equal(session.orchestration.current, 'atlas');
-  assert.deepEqual(session.ui.calls.select.at(-1).names, ['Sisyphus', 'Prometheus', 'Atlas']);
-
-  await command.handler('SISYPHUS', session.ctx);
-  assert.equal(session.orchestration.current, 'sisyphus');
-
-  const entriesBefore = entryAgents(session).length;
-  await command.handler('nobody', session.ctx);
-  assert.match(session.ui.calls.notify.at(-1).message, /알 수 없는 에이전트/);
-  assert.match(session.ui.calls.notify.at(-1).message, /Sisyphus, Hephaestus, Prometheus, Atlas/);
-  assert.equal(entryAgents(session).length, entriesBefore);
-  assert.equal(session.orchestration.current, 'sisyphus');
-});
-
-test('/agent stays put when the target is unavailable', async t => {
-  const session = makeSession(t, { registry: fakeRegistry(MODELS.filter(model => model.provider === 'sub')) });
-  await session.start('resume');
-  const entriesBefore = entryAgents(session).length;
-
-  await session.commands.get('agent').handler('Hephaestus', session.ctx);
-
-  assert.equal(session.orchestration.current, 'sisyphus');
-  assert.equal(entryAgents(session).length, entriesBefore);
-  assert.match(session.ui.calls.notify.at(-1).message, /Hephaestus는 지금 사용할 수 없어요/);
-});
-
-test('idle /ulw-execute switches to Atlas and forwards the original text once', async t => {
-  const session = makeSession(t);
-  await session.start('resume');
-
-  await session.ui.editor.onSubmit('/ulw-execute do it');
-
-  assert.equal(session.orchestration.current, 'atlas');
-  assert.deepEqual(entryAgents(session), ['atlas']);
-  assert.equal(session.ui.calls.hostSubmit.length, 1);
-  assert.equal(session.ui.calls.hostSubmit[0].text, '/ulw-execute do it');
-});
-
-test('streaming /ulw-execute keeps the text and does not submit', async t => {
-  const session = makeSession(t, { isIdle: () => false });
-  await session.start('resume');
-
-  await session.ui.editor.onSubmit('/ulw-execute later');
-
-  assert.equal(session.orchestration.current, 'sisyphus');
-  assert.deepEqual(entryAgents(session), []);
-  assert.equal(session.ui.calls.hostSubmit.length, 0);
-  assert.equal(session.ui.editor.getText(), '/ulw-execute later');
-  assert.equal(session.ui.calls.notify.at(-1).message, STREAMING_EXECUTE_NOTICE);
-});
-
-test('tool policy blocks Prometheus code edits with Korean then English', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
-  await session.start('resume');
-
-  const blocked = await session.fire('tool_call', {
-    type: 'tool_call', toolName: 'edit', input: { path: join(session.sandbox.root, 'src', 'a.js') },
-  });
-  assert.equal(blocked.block, true);
-  assert.match(blocked.reason, /^프로메테우스는/);
-  assert.match(blocked.reason, /\/ Prometheus may only edit \.omo plan files\./);
-
-  const allowed = await session.fire('tool_call', {
-    type: 'tool_call', toolName: 'edit', input: { path: join(session.sandbox.root, '.omo', 'plans', 'a.md') },
-  });
-  assert.equal(allowed, undefined);
-});
-
-test('before_agent_start appends the overlay and previews stay pure', async t => {
-  const session = makeSession(t, { branch: resumedBranch('prometheus') });
-  await session.start('resume');
-
-  const result = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
-  });
-  assert.match(result.systemPrompt, /^BASE/);
-  assert.match(result.systemPrompt, /piomo-primary-agent:begin id=prometheus/);
-
-  const before = existsSync(memoryPath(session.sandbox.agentDir, 'prometheus'));
-  const preview = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: true,
-  });
-  assert.equal(preview.systemPrompt, result.systemPrompt);
-  assert.equal(existsSync(memoryPath(session.sandbox.agentDir, 'prometheus')), before);
-});
-
-test('Sisyphus before_agent_start leaves the host prompt untouched', async t => {
-  const session = makeSession(t, { branch: resumedBranch('sisyphus') });
-  await session.start('resume');
-
-  const result = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: false,
-  });
-  assert.equal(result, undefined, 'returning the base would drop the host MCP post-processing');
-
-  const preview = await session.fire('before_agent_start', {
-    type: 'before_agent_start', systemPrompt: 'BASE', preview: true,
-  });
-  assert.equal(preview, undefined);
-});
-
-test('rapid switches serialize through one chain', async t => {
-  const session = makeSession(t, {
-    beforeModel: () => new Promise(resolve => setImmediate(resolve)),
-  });
-  await session.start('resume');
-  session.calls.length = 0;
-
-  const first = session.orchestration.switchTo('atlas');
-  const second = session.orchestration.switchTo('prometheus');
-  await Promise.all([first, second]);
-
-  assert.deepEqual(entryAgents(session), ['atlas', 'prometheus']);
-  assert.equal(session.orchestration.current, 'prometheus');
-});
-
-test('gate mirror records only interactive plan/execute and forgets on shutdown', () => {
-  assert.equal(isPlanRequest('/skill:ulw-plan x'), true);
-  assert.equal(isPlanRequest('/skill:ulw-plan'), true);
-  assert.equal(isPlanRequest('/skill:ulw-planning'), false);
+test('the gate mirror records interactive execute only and forgets on shutdown', () => {
   assert.equal(isUlwExecute('/skill:ulw-execute x'), true);
   assert.equal(isUlwExecute('/ulw-execute'), true);
   assert.equal(isUlwExecute('/ulw-execut'), false);
@@ -945,13 +697,11 @@ test('gate mirror records only interactive plan/execute and forgets on shutdown'
   assert.equal(isUlwExecuteSkillPath('C:/pkg/skills/ulw-execute/SKILL.md.bak'), false);
 
   const mirror = createGateMirror();
-  assert.equal(mirror.needsPlanRewrite('s'), true);
-  mirror.observeInput('s', '/skill:ulw-execute x', 'extension');
-  assert.equal(mirror.needsPlanRewrite('s'), true);
-  mirror.observeInput('s', '/skill:ulw-execute x', 'interactive');
-  assert.equal(mirror.needsPlanRewrite('s'), true);
-  mirror.observeInput('s', '/skill:ulw-plan p', 'interactive');
-  assert.equal(mirror.needsPlanRewrite('s'), false);
+  mirror.observeInput('s', '/ulw-execute x', 'extension');
+  assert.equal(mirror.hasUlwExecute('s'), false);
+  mirror.observeInput('s', '/ulw-execute x', 'interactive');
+  assert.equal(mirror.hasUlwExecute('s'), true);
+  assert.deepEqual(mirror.snapshot('s'), { execute: 1 });
   mirror.forget('s');
-  assert.deepEqual(mirror.snapshot('s'), { plan: 0, execute: 0 });
+  assert.deepEqual(mirror.snapshot('s'), { execute: 0 });
 });

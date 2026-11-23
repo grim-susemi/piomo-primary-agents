@@ -82,13 +82,16 @@ test('selection order is active Boulder, paused Boulder, single plan, choice, ne
   });
   assert.deepEqual(
     selectExecutionPlan({ activePlans: ['lead-a', 'lead-b'], availablePlans: ['lead-a', 'lead-b'] }),
-    { kind: 'blocked', reason: 'active-multiple' },
+    { kind: 'choose', candidates: ['lead-a', 'lead-b'] },
   );
   assert.deepEqual(selectExecutionPlan({ pausedPlans: ['lead-c'], availablePlans: ['lead-c'] }), {
     kind: 'paused',
     slug: 'lead-c',
   });
-  assert.deepEqual(selectExecutionPlan({ pausedPlans: ['a', 'b'] }), { kind: 'blocked', reason: 'paused-multiple' });
+  assert.deepEqual(
+    selectExecutionPlan({ pausedPlans: ['a', 'b'], availablePlans: ['a', 'b'] }),
+    { kind: 'choose', candidates: ['a', 'b'] },
+  );
   assert.deepEqual(selectExecutionPlan({ availablePlans: ['solo'] }), { kind: 'single', slug: 'solo' });
   assert.deepEqual(selectExecutionPlan({ availablePlans: ['a', 'b'] }), { kind: 'choose', candidates: ['a', 'b'] });
   assert.deepEqual(selectExecutionPlan({}), { kind: 'new' });

@@ -96,16 +96,24 @@ export function selectExecutionPlan({
   if (explicitName) {
     const matches = available.filter((name) => name === explicitName);
     if (matches.length === 1) return { kind: 'explicit', slug: explicitName };
-    return { kind: 'blocked', reason: matches.length ? 'explicit-duplicate' : 'explicit-not-found' };
+    return { kind: 'blocked', reason: 'explicit-not-found' };
   }
 
   const active = unique(activePlans);
   if (active.length === 1) return { kind: 'active', slug: active[0] };
-  if (active.length > 1) return { kind: 'blocked', reason: 'active-multiple' };
+  if (active.length > 1) {
+    const candidates = active.filter((name) => available.includes(name));
+    if (candidates.length === 1) return { kind: 'active', slug: candidates[0] };
+    if (candidates.length > 1) return { kind: 'choose', candidates };
+  }
 
   const paused = unique(pausedPlans);
   if (paused.length === 1) return { kind: 'paused', slug: paused[0] };
-  if (paused.length > 1) return { kind: 'blocked', reason: 'paused-multiple' };
+  if (paused.length > 1) {
+    const candidates = paused.filter((name) => available.includes(name));
+    if (candidates.length === 1) return { kind: 'paused', slug: candidates[0] };
+    if (candidates.length > 1) return { kind: 'choose', candidates };
+  }
 
   if (available.length === 1) return { kind: 'single', slug: available[0] };
   if (available.length > 1) return { kind: 'choose', candidates: available };

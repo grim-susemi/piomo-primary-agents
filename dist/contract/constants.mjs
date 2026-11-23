@@ -3,6 +3,11 @@
 
 export const AGENT_IDS = ['sisyphus', 'hephaestus', 'prometheus', 'atlas'];
 
+// Atlas is retired: its id and stored history stay valid so an old session or
+// roster is not rewritten, but no new selection may enter it.
+export const RETIRED_AGENT_IDS = Object.freeze(['atlas']);
+export const SELECTABLE_AGENT_IDS = AGENT_IDS.filter(id => !RETIRED_AGENT_IDS.includes(id));
+
 export const DISPLAY = {
   sisyphus: 'Sisyphus',
   hephaestus: 'Hephaestus',

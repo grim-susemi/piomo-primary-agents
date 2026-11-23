@@ -1,13 +1,13 @@
 # piomo-primary-agents
 
-senpi(pi) TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고 계획·실행 요청으로 다른 역할에 들어가는 확장입니다.
-Sisyphus, Hephaestus, Prometheus, Atlas가 그 네 명이고, 이 확장은 다음을 합니다.
+senpi(pi) TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고, 승인된 계획의 실행 책임자에 따라 실행 역할을 고르는 확장입니다.
+Sisyphus, Hephaestus, Prometheus가 선택 가능한 세 역할이고, Atlas는 퇴역해 새로 선택할 수 없습니다.
 
 - 입력창에서 Tab을 누르면 Sisyphus와 Hephaestus가 전환됩니다.
 - 입력창 아래에 지금 에이전트, 모델, 추론 단계를 한 줄로 보여 줍니다.
 - 에이전트마다 마지막으로 고른 모델을 기억합니다.
-- Prometheus와 Atlas는 쓸 수 있는 파일과 도구를 제한합니다.
-- Prometheus에게 말로 계획을 부탁하면 정식 계획 검토(ulw-plan)로 이어집니다.
+- Prometheus는 이름과 모델 프리셋만 유지하고, 계획·검토·도구 권한은 Native 흐름을 따릅니다.
+- `/ulw-execute <계획>`은 계획의 `Execution lead:`를 읽어 그 역할로 전환한 뒤 실행을 넘깁니다.
 
 작업자(자식) 세션에서는 아무것도 하지 않습니다. 메인 TUI 세션에서만 움직입니다.
 
@@ -20,9 +20,9 @@ English: [README.md](README.md) · WinForms 스위처 보관 절차: [docs/winfo
 ### 카드 1. 에이전트 바꾸기: Tab
 
 **할 일:** 입력창에서 Tab을 누릅니다.
-**결과:** Sisyphus와 Hephaestus가 서로 전환됩니다. Prometheus나 Atlas에서는 저장된 원래 역할로 돌아가며, 저장된 역할이 없으면 Sisyphus로 돌아갑니다. Hephaestus를 쓸 수 없으면 Sisyphus를 유지하고 알립니다. 네 역할 모두 `/agent`로 선택할 수 있습니다.
+**결과:** Sisyphus와 Hephaestus가 서로 전환됩니다. Prometheus에서는 Sisyphus로 돌아갑니다. Hephaestus를 쓸 수 없으면 Sisyphus를 유지하고 알립니다. `/agent`로 Sisyphus, Hephaestus, Prometheus를 선택할 수 있습니다. Atlas는 퇴역해 새로 선택할 수 없습니다.
 
-`/skill:ulw-plan` 요청은 Prometheus로, `/ulw-execute` 또는 `/skill:ulw-execute` 요청은 Atlas로 전환합니다. Atlas가 이 세션의 활성 boulder 작업을 관측한 뒤 해당 작업이 제거되거나 완료되면 원래 역할로 돌아갑니다. 원래 역할과 관측 상태는 reload·resume에서 복원하지 않습니다.
+`/skill:ulw-plan` 요청은 역할을 바꾸지 않고 그대로 Native에 전달합니다. `/ulw-execute` 또는 `/skill:ulw-execute` 요청은 계획을 하나 고른 뒤 그 계획의 `Execution lead:` 역할로 전환하고, 역할·모델이 실제 세션에 적용된 것을 확인한 다음 같은 계획 이름으로 실행을 넘깁니다. 계획이 없으면 `/skill:ulw-plan` 안내문을 한 번 전달하며 실행으로 넘어가지 않습니다.
 
 Tab이 **자동완성으로 남는** 경우가 있습니다.
 
@@ -44,15 +44,15 @@ Tab이 **자동완성으로 남는** 경우가 있습니다.
 ▌ Hephaestus  gpt-6.1-sol-fast · medium                Tab 전환
 ```
 
-- 막대와 이름은 에이전트 색입니다(Sisyphus 청록, Hephaestus 주황, Prometheus 보라, Atlas 초록).
+- 막대와 이름은 에이전트 색입니다(Sisyphus 청록, Hephaestus 주황, Prometheus 보라).
 - 이름 뒤는 모델 id와 추론 단계입니다.
 - 모델 뒤에 `(대기)`가 붙으면 모델 변경이 다음 턴에 적용된다는 뜻입니다.
 - 화면이 좁으면 오른쪽 `Tab 전환` 안내가 먼저 사라지고, 그다음 모델 id가 `…`로 줄어듭니다.
 
 ### 카드 3. 이름으로 바꾸기: `/agent`
 
-**할 일:** `/agent`를 입력합니다. 이름을 바로 붙여도 됩니다(`/agent atlas`, 대소문자 무관).
-**결과:** 이름이 없으면 쓸 수 있는 에이전트 목록이 뜨고, 고르면 바뀝니다. 모르는 이름이면 "알 수 없는 에이전트예요"와 함께 쓸 수 있는 이름을 알려 줍니다.
+**할 일:** `/agent`를 입력합니다. 이름을 바로 붙여도 됩니다(`/agent hephaestus`, 대소문자 무관).
+**결과:** 이름이 없으면 쓸 수 있는 에이전트 목록이 뜨고, 고르면 바뀝니다. `atlas`는 퇴역했다는 안내와 함께 거절합니다. 모르는 이름이면 "알 수 없는 에이전트예요"와 함께 쓸 수 있는 이름을 알려 줍니다.
 
 ### 카드 4. 에이전트별 모델 기억
 
@@ -64,7 +64,7 @@ Tab이 **자동완성으로 남는** 경우가 있습니다.
 - 기억: `<agentDir>/primary-agents/memory/<에이전트id>.json` (이 확장만 씁니다)
 - 레인과 핀: `<agentDir>/primary-agents/roster.json` (상황판만 씁니다)
 
-현재 roster `rev`와 맞는 기억, 핀, 레인 기본값 순으로 씁니다. 핀이 없는 Sisyphus는 레인보다 settings의 메인 모델을 먼저 씁니다. 새 세션에도 기억을 적용하며, 호스트가 이미 메인 모델로 시작했으면 다시 적용하지 않습니다. 모델·추론 단계 선택은 선택한 시점의 roster `rev`를 기억합니다. Sisyphus와 Atlas는 daily-normal, Prometheus는 daily-heavy, Hephaestus는 geeky-normal입니다. 상황판에서 핀을 바꾸거나 기억을 초기화하면 `rev`가 올라가고, 예전 기억은 무시됩니다.
+현재 roster `rev`와 맞는 기억, 핀, 레인 기본값 순으로 씁니다. 핀이 없는 Sisyphus는 레인보다 settings의 메인 모델을 먼저 씁니다. 새 세션에도 기억을 적용하며, 호스트가 이미 메인 모델로 시작했으면 다시 적용하지 않습니다. 모델·추론 단계 선택은 선택한 시점의 roster `rev`를 기억합니다. Sisyphus는 daily-normal, Prometheus는 daily-heavy, Hephaestus는 geeky-normal입니다. 상황판에서 핀을 바꾸거나 기억을 초기화하면 `rev`가 올라가고, 예전 기억은 무시됩니다.
 
 Windows 스위처에서 바꾼 값은 roster `rev`를 올리지 않아 기존 기억을 이기지 못합니다. 상황판에서 기억을 초기화하거나 핀을 바꾸세요. 사용할 수 없는 상위 후보는 모델명, 미등록·미인증 이유와 실제 대체 모델을 세션마다 한 번 알립니다. 파일 경고는 코드·파일마다 한 번 표시합니다. 레인에서 `opencode-go`를 쓸 수 있는 모델은 Muse뿐이며, 명시적으로 고른 기억·핀·메인은 이 제한을 받지 않습니다. 다른 제공자의 후보는 그대로 남습니다.
 
@@ -76,26 +76,23 @@ Windows 스위처에서 바꾼 값은 roster `rev`를 올리지 않아 기존 �
 
 **결과:** 승인 요약과 계획 파일의 TL;DR에 같은 역할과 이유가 남습니다. 두 줄이 모두 없으면 `미지정`으로 보고 기존처럼 시지푸스가 이끕니다. 한 줄만 있거나, 역할이 `atlas`처럼 다르거나, 이유가 비어 있으면 무효로 보고 실행으로 넘기지 않습니다. 직접 `/skill:ulw-plan`을 호출해 책임자를 요청하지 않은 경우에는 두 줄이 없어도 됩니다.
 
-### 카드 5. Prometheus에게 계획 맡기기
+### 카드 5. Prometheus는 프리셋만
 
-**할 일:** Prometheus로 바꾼 뒤 그냥 말로 부탁합니다. 예: "로그인 화면 개편 계획 짜 줘".
-**결과:** 명령어 없이도 정식 계획 흐름(ulw-plan)과 검토가 열립니다. `/skill:ulw-plan`을 직접 쳐도 됩니다.
+**할 일:** Prometheus로 바꾼 뒤 `/skill:ulw-plan`을 직접 칩니다.
+**결과:** Prometheus는 이름과 제공자·모델·추론 프리셋만 유지합니다. 말로 계획을 부탁해도 자동으로 계획 흐름으로 바꾸지 않으며, 프롬프트 오버레이·도구 제한·입력 재작성도 없습니다. 계획·검토·권한은 Native와 호스트 게이트가 처리합니다.
 
 실행(ulw-execute) 뒤에도 소유자가 새 계획을 요청하면 같은 세션에서 검토할 수 있습니다. `plan-review-unlock` 정책이 적용된 환경에서는 추가 게이트 어댑터가 필요하지 않고, 다시 실행해도 검토를 잠그지 않습니다. 명시적인 계획 요청과 실제 계획 파일은 여전히 필요합니다. 이전 실행 잠금 정책을 사용하는 환경의 선택적 어댑터는 아직 실사용 설치 전이며, 설치는 소유자 승인 단계(todo 16)에서만 합니다. 설치, 제거, 되돌리기, omo 업데이트 뒤 다시 적용하는 방법: [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md)
 
-### 카드 6. Prometheus와 Atlas의 제한 알기
+### 카드 6. 실행 책임자와 인계 확인
 
 **할 일:** 없음. 알아 두기만 하면 됩니다.
 **결과:**
 
-- **Prometheus**는 `<작업폴더>/.omo/` 아래 `.md` 파일만 고칠 수 있습니다. 셸은 읽기 명령과 계획 생성 스크립트만 되고, 위임도 읽기 전용 에이전트(explore, librarian, oracle, plan-consultant, plan-reviewer)에게만 됩니다.
-- **Atlas**는 `<작업폴더>/.omo/` 아래만 고칠 수 있습니다.
-- Sisyphus와 Hephaestus는 제한이 없습니다.
-
-알려진 빈틈(일부러 남긴 것):
-
-- 제한은 도구 단위입니다. eval 셀 안에서 코드가 직접 파일을 쓰면 막지 못합니다.
-- Atlas의 bash는 열려 있습니다. bash로 하는 쓰기는 막지 않습니다.
+- `/ulw-execute <계획>`은 `.omo/plans/<계획>.md`의 TL;DR에 있는 `Execution lead: sisyphus|hephaestus`와 `Execution rationale:`을 읽습니다. 두 줄이 없으면 기존처럼 Sisyphus가 이끕니다. 한 줄만 있거나, 역할이 틀리거나, 이유가 비면 실행을 넘기지 않습니다.
+- 계획이 여러 개면 하나를 고르는 선택창이 뜹니다. 명시한 계획 이름을 찾지 못하면 다른 계획으로 대체하지 않습니다.
+- 실행을 넘기기 직전에 계획 바이트의 SHA-256을 기억하고, Native가 같은 계획을 실제 `read`로 읽어 같은 본문을 돌려줄 때만 첫 `task`/`workflow` 위임을 허용합니다. 읽기 전 위임, 다른 계획 읽기, 본문 불일치, 역할 변경, 계획 파일 변경은 위임을 막고 새 `/ulw-execute` 요청을 요구합니다.
+- 같은 세션에서 실행 요청을 처리하는 동안 들어온 두 번째 실행 입력은 안내만 하고 넘기지 않습니다.
+- Atlas는 퇴역했습니다. 기존 세션은 work ID·체크포인트를 그대로 두고 Sisyphus로 이어가며, `/agent atlas`는 거절합니다.
 
 ---
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PROMPTS_DIR = process.env.PIOMO_PROMPTS_DIR ?? join(ROOT, 'prompts');
-const NAMES = ['prometheus.md', 'atlas.md', 'hephaestus.md'];
+const NAMES = ['hephaestus.md'];
 const NOTICE = "Portions adapted from oh-my-openagent 5.0.0 by code-yeongyu, licensed under the Sustainable Use License 1.0 (LICENSES/SUL-1.0.md). Modified for PiOMO by grim-susemi, 2026-10-20.";
 const CLOSING = "When a workflow skill (ulw-plan, ulw-execute) is loaded, follow it; this block only adds role limits. Tool restrictions enforced by the harness always win.";
 

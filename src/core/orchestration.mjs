@@ -13,9 +13,9 @@
 // Switch order is fixed: model -> verify -> thinking -> identity entry -> label.
 // Identity and tool policy switch immediately; only the model may stay pending
 // until the runtime commits the next `model_change`.
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { AGENT_IDS, DISPLAY } from '../../contract/constants.mjs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { AGENT_IDS, DISPLAY, SELECTABLE_AGENT_IDS } from '../../contract/constants.mjs';
 import { atomicWriteJson } from '../../contract/atomic.mjs';
 import { readLaneOverrides } from '../../contract/jsonc.mjs';
 import { resolve } from '../../contract/resolve.mjs';
@@ -26,8 +26,13 @@ import { MARKER_BEGIN, hasUnlockedReviewPolicy } from '../gate-adapter/adapter.m
 import { installUi } from '../ui/install.mjs';
 import { isPrimaryMain } from './gate.mjs';
 import {
-  createGateMirror, INTERACTIVE_SOURCE, isPlanRequest, isUlwExecute, isUlwExecuteSkillPath,
+  createGateMirror, INTERACTIVE_SOURCE, isUlwExecute, isUlwExecuteSkillPath,
 } from './gate-mirror.mjs';
+import { resolveExecutionLead, selectExecutionPlan } from './execution-plan.mjs';
+import {
+  beginRead, completeRead, createPlanHandoff, delegationVerdict, handoffBlockReason,
+  normalizeText, sha256Text,
+} from './plan-handoff.mjs';
 import { realpathNearestAncestor, verdict } from './policy.mjs';
 import { applyOverlay } from './prompt.mjs';
 import {
@@ -37,7 +42,10 @@ import {
 export const AGENT_COMMAND = 'agent';
 export const AGENT_PICKER_TITLE = '에이전트 선택';
 export const ADAPTER_MISSING_NOTICE = '실행 뒤 계획 검토 허용을 확인하지 못했어요. 현재 검토 정책 또는 게이트 어댑터 설정을 확인하세요';
-export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 누르면 아틀라스로 실행돼요';
+export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 누르면 실행으로 넘어가요';
+export const SUBMIT_LOCKED_NOTICE = '같은 세션의 실행 요청을 처리 중이에요. 끝난 뒤 다시 보내 주세요.';
+export const EXECUTE_PICKER_TITLE = '실행할 계획 선택';
+export const PLAN_BOOTSTRAP_TEXT = '/skill:ulw-plan 실행할 목표를 먼저 확인하고, 승인 요약에 시지푸스 또는 헤파이토스 총괄 한 명과 선택 이유를 제시하세요. 승인 후 완성본 TL;DR 끝에 Execution lead: sisyphus|hephaestus 중 한 값과 Execution rationale: 이유를 각각 한 줄로 기록하세요. 계획 작성 및 검토가 끝나면 /ulw-execute <slug> 명령을 안내하세요.';
 
 const RING = Object.freeze(['sisyphus', 'hephaestus']);
 const DEFAULT_SESSION_ID = 'default';
@@ -51,15 +59,6 @@ const REASON_TEXT = {
   'no-registry': '모델 레지스트리가 없어요',
 };
 
-const BLOCK_KO = {
-  prometheus: '프로메테우스는 .omo 계획 문서만 수정할 수 있어요. 코드 수정은 Tab으로 다른 에이전트로 바꾼 뒤 하세요.',
-  atlas: '아틀라스는 .omo 폴더 안의 파일만 수정할 수 있어요. 코드 수정은 Tab으로 다른 에이전트로 바꾼 뒤 하세요.',
-};
-const BLOCK_EN = {
-  prometheus: 'Prometheus may only edit .omo plan files.',
-  atlas: 'Atlas may only edit files under .omo.',
-};
-
 function stripNoticeLine(text) {
   const newline = text.indexOf('\n');
   return newline === -1 ? '' : text.slice(newline + 1);
@@ -68,8 +67,8 @@ function stripNoticeLine(text) {
 /** Overlay bytes are loaded once, at factory time: each prompt minus its notice line. */
 export function loadOverlays() {
   const overlays = {};
-  for (const agentId of AGENT_IDS) {
-    if (agentId === 'sisyphus') continue;
+  // Prometheus keeps only its name and model preset; its prompt overlay is gone.
+  for (const agentId of ['hephaestus']) {
     try {
       const text = readFileSync(new URL(`../../prompts/${agentId}.md`, import.meta.url), 'utf8');
       overlays[agentId] = stripNoticeLine(text);
@@ -201,9 +200,8 @@ export function createOrchestrator(pi, options = {}) {
   let laneOverrides = {};
   let mainModel = null;
   let current = 'sisyphus';
-  let returnTo = null;
-  let atlasArmed = false;
-  const atlasWorkIds = new Set();
+  let submitLock = false;
+  let pendingHandoff = null;
   let cursor = initialCursor('sisyphus');
   let sessionId = DEFAULT_SESSION_ID;
   let adapterPresent = false;
@@ -212,7 +210,6 @@ export function createOrchestrator(pi, options = {}) {
   let pendingModel = null;
   let switching = 0;
   let chain = Promise.resolve();
-  let scaffoldPath = null;
   const nonGptNotices = new Set();
   const ownEntryIds = new Set();
   const pendingThinking = new Map();
@@ -493,19 +490,6 @@ export function createOrchestrator(pi, options = {}) {
     }
   }
 
-  function detectScaffoldPath(ctx) {
-    const paths = Array.isArray(ctx?.loadedExtensionPaths) ? ctx.loadedExtensionPaths : [];
-    for (const path of paths) {
-      let directory = dirname(String(path));
-      for (let depth = 0; depth < 4; depth += 1) {
-        const candidate = join(directory, 'skills', 'ulw-plan', 'scripts', 'scaffold-plan.mjs');
-        if (existsSync(candidate)) return candidate;
-        directory = dirname(directory);
-      }
-    }
-    return null;
-  }
-
   function observeUlwExecute() {
     mirror.ulwExecute(sessionKey());
     if (adapterPresent || adapterNoticeSent) return;
@@ -553,10 +537,7 @@ export function createOrchestrator(pi, options = {}) {
   }
 
   function blockReason(agentId, detail) {
-    const ko = BLOCK_KO[agentId];
-    const en = BLOCK_EN[agentId];
-    if (ko && en) return `${ko} / ${en} (${detail})`;
-    return `이 도구는 이 에이전트에게 막혀 있어요. / This tool is blocked for this agent. (${detail})`;
+    return `이 도구는 ${DISPLAY[agentId] ?? agentId}에게 막혀 있어요. / This tool is blocked for this agent. (${detail})`;
   }
 
   async function doSwitch(targetId, switchOptions) {
@@ -638,14 +619,8 @@ export function createOrchestrator(pi, options = {}) {
 
     if (typeof resolved.thinking === 'string') setSessionThinking(resolved.thinking);
 
-    const leavingWorkflow = !RING.includes(current);
     appendIdentity(pi, destination);
     current = destination;
-    if (switchOptions.source === 'tab' && leavingWorkflow) {
-      returnTo = null;
-      atlasArmed = false;
-      atlasWorkIds.clear();
-    }
 
     if (held) pendingModel.fromIndex = getBranch().length;
     refresh();
@@ -693,7 +668,7 @@ export function createOrchestrator(pi, options = {}) {
       isSwitchInFlight: () => switching > 0,
       onCycle: () => {
         const leavingWorkflow = !RING.includes(current);
-        const target = leavingWorkflow ? (returnTo ?? 'sisyphus') : nextAgent(current);
+        const target = leavingWorkflow ? 'sisyphus' : nextAgent(current);
         void switchTo(target, { source: 'tab' }).catch(() => undefined);
       },
       onThinkingIntent: () => {
@@ -710,6 +685,151 @@ export function createOrchestrator(pi, options = {}) {
     return installed;
   }
 
+  const slashed = (value) => String(value ?? '').replace(/\\/g, '/').toLowerCase();
+
+  function planSlugs(cwd) {
+    try {
+      return readdirSync(join(cwd, '.omo', 'plans'), { withFileTypes: true })
+        .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+        .map(entry => entry.name.slice(0, -3))
+        .sort();
+    } catch {
+      return [];
+    }
+  }
+
+  function boulderPlans(cwd, id) {
+    let works;
+    try {
+      works = JSON.parse(readFileSync(join(cwd, '.omo', 'boulder.json'), 'utf8'))?.works;
+    } catch {
+      return { active: [], paused: [] };
+    }
+    if (!works || typeof works !== 'object' || Array.isArray(works)) return { active: [], paused: [] };
+    const own = `senpi:${id}`;
+    const active = new Set();
+    const paused = new Set();
+    for (const work of Object.values(works)) {
+      if (!work || typeof work !== 'object') continue;
+      if (!Array.isArray(work.session_ids) || !work.session_ids.includes(own)) continue;
+      const planName = typeof work.plan_name === 'string' && work.plan_name.length > 0
+        ? work.plan_name
+        : (typeof work.active_plan === 'string' && work.active_plan.length > 0
+          ? basename(work.active_plan, '.md') : null);
+      if (!planName) continue;
+      if (work.status === 'active') active.add(planName);
+      else if (work.status === 'paused') paused.add(planName);
+    }
+    return { active: [...active].sort(), paused: [...paused].sort() };
+  }
+
+  function parseExecute(text) {
+    const command = ['/skill:ulw-execute', '/ulw-execute']
+      .find(prefix => text === prefix || text.startsWith(`${prefix} `));
+    if (!command) return null;
+    const rest = text.slice(command.length).trim();
+    const tokens = rest.length === 0 ? [] : rest.split(/\s+/);
+    let nameIndex = -1;
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (!tokens[index].startsWith('-')) { nameIndex = index; break; }
+    }
+    const name = nameIndex === -1 ? null : tokens[nameIndex];
+    const options = nameIndex === -1 ? tokens : tokens.filter((_, index) => index !== nameIndex);
+    return { command, name, options };
+  }
+
+  function planPath(cwd, slug) {
+    const raw = join(cwd, '.omo', 'plans', `${slug}.md`);
+    const normalized = realpathNearestAncestor(raw) ?? resolvePath(raw);
+    let text;
+    try {
+      text = normalizeText(readFileSync(raw, 'utf8'));
+    } catch {
+      return null;
+    }
+    return { raw, path: normalized, text, sha256: sha256Text(text) };
+  }
+
+  function planTextAt(path) {
+    try {
+      return sha256Text(readFileSync(path, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  function isPlanPath(candidate, cwd) {
+    if (typeof candidate !== 'string') return false;
+    const normalized = slashed(realpathNearestAncestor(candidate) ?? resolvePath(candidate));
+    const dir = slashed(realpathNearestAncestor(join(cwd, '.omo', 'plans')) ?? resolvePath(join(cwd, '.omo', 'plans')));
+    return normalized.startsWith(`${dir}/`) && normalized.endsWith('.md');
+  }
+
+  function executeBlockedNotice(selection) {
+    if (selection.reason === 'explicit-not-found') {
+      return '명시한 계획을 찾지 못했어요. 다른 계획으로 대체하지 않았어요.';
+    }
+    if (selection.reason === 'explicit-duplicate') {
+      return '같은 이름의 계획이 여러 개라 실행하지 않았어요.';
+    }
+    return `계획 선택을 막았어요(${selection.reason}).`;
+  }
+
+  function observeHandoffReadCall(event, ctx) {
+    if (!pendingHandoff) return;
+    const input = event?.input ?? {};
+    const path = input.path ?? input.file_path;
+    if (typeof path !== 'string') return;
+    const cwd = ctx?.cwd ?? process.cwd();
+    const samePath = slashed(realpathNearestAncestor(path) ?? resolvePath(path))
+      === slashed(pendingHandoff.path);
+    const planRead = !samePath && isPlanPath(path, cwd);
+    const action = beginRead(pendingHandoff, {
+      toolCallId: event?.toolCallId,
+      input,
+      samePath,
+      isPlan: planRead,
+    });
+    if (action === 'other' && planRead) {
+      notify(ctx, handoffBlockReason('other-plan-read'), 'warning');
+    }
+  }
+
+  function observeHandoffReadResult(event, ctx) {
+    if (!pendingHandoff || !pendingHandoff.reads.has(event?.toolCallId)) return;
+    const parts = Array.isArray(event?.content) ? event.content : [];
+    const text = parts
+      .filter(part => part && part.type === 'text' && part.audience !== 'model')
+      .map(part => part.text ?? '')
+      .join('\n');
+    const result = completeRead(pendingHandoff, {
+      toolCallId: event?.toolCallId,
+      text,
+      details: event?.details,
+    });
+    if (!result.ok && result.reason === 'body-mismatch') {
+      notify(ctx, handoffBlockReason('body-mismatch'), 'warning');
+    }
+  }
+
+  function handoffDelegationBlock(ctx) {
+    if (!pendingHandoff) return null;
+    const live = {
+      role: current,
+      provider: providerOf(ctx?.model),
+      modelId: modelIdOf(ctx?.model),
+      thinking: ctx?.thinkingLevel ?? null,
+    };
+    const block = delegationVerdict(pendingHandoff, {
+      live,
+      fileSha: planTextAt(pendingHandoff.path),
+    });
+    if (!block) return null;
+    const reason = handoffBlockReason(pendingHandoff.reason ?? 'read-required');
+    notify(ctx, reason, 'warning');
+    return { block: true, reason };
+  }
+
   async function handleSubmit(editor, hostSubmit, text, details, ctx) {
     if (!active) {
       hostSubmit?.(text, details);
@@ -719,48 +839,120 @@ export function createOrchestrator(pi, options = {}) {
     completePending();
     reconcileMemoryNow();
 
-    if (isUlwExecute(text) || isPlanRequest(text)) {
-      if (!liveIdle(ctx)) {
-        notify(ctx, STREAMING_EXECUTE_NOTICE, 'info');
-        editor?.setText?.(text);
-        return;
-      }
-      if (RING.includes(current)) returnTo = current;
-      if (isPlanRequest(text)) {
-        await switchTo('prometheus', { source: 'submit' });
-        mirror.planRequest(sessionKey());
-        hostSubmit?.(text, details);
-        return;
-      }
-      observeUlwExecute();
-      atlasArmed = false;
-      atlasWorkIds.clear();
-      try {
-        await switchTo('atlas', { source: 'submit' });
-      } finally {
-        hostSubmit?.(text, details);
-      }
+    if (!isUlwExecute(text)) {
+      hostSubmit?.(text, details);
       return;
     }
-
-    if (
-      current === 'prometheus'
-      && text.length > 0
-      && !text.startsWith('/')
-      && !text.startsWith('!')
-      && mirror.needsPlanRewrite(sessionKey())
-    ) {
-      mirror.planRequest(sessionKey());
-      const rewritten = `/skill:ulw-plan ${text}`;
-      // The host expands the submitted text from the editor's live content, so
-      // update the editor before handing the rewritten command to the host.
-      editor?.setText?.(rewritten);
-      hostSubmit?.(rewritten, details);
+    if (!liveIdle(ctx)) {
+      notify(ctx, STREAMING_EXECUTE_NOTICE, 'info');
+      editor?.setText?.(text);
+      return;
+    }
+    if (submitLock) {
+      notify(ctx, SUBMIT_LOCKED_NOTICE, 'info');
+      return;
+    }
+    submitLock = true;
+    const original = text;
+    try {
+      const parsed = parseExecute(original);
+      if (!parsed) {
+        hostSubmit?.(original, details);
+        return;
+      }
+      const cwd = ctx?.cwd ?? process.cwd();
+      const boulder = boulderPlans(cwd, sessionKey());
+      const selection = selectExecutionPlan({
+        explicitName: parsed.name,
+        activePlans: boulder.active,
+        pausedPlans: boulder.paused,
+        availablePlans: planSlugs(cwd),
+      });
+      if (selection.kind === 'new') {
+        // No selectable plan: hand the Native plan bootstrap the literal request once.
+        editor?.setText?.(PLAN_BOOTSTRAP_TEXT);
+        hostSubmit?.(PLAN_BOOTSTRAP_TEXT, details);
+        editor?.setText?.('');
+        return;
+      }
+      if (selection.kind === 'blocked') {
+        notify(ctx, executeBlockedNotice(selection), 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      let slug = selection.slug;
+      if (selection.kind === 'choose') {
+        const choice = await ctx?.ui?.select?.(EXECUTE_PICKER_TITLE, selection.candidates);
+        if (typeof choice !== 'string' || !selection.candidates.includes(choice)) {
+          notify(ctx, '계획 선택을 취소해 실행하지 않았어요.', 'info');
+          editor?.setText?.(original);
+          return;
+        }
+        slug = choice;
+      }
+      const plan = planPath(cwd, slug);
+      if (!plan) {
+        notify(ctx, `계획 파일을 읽지 못했어요: ${slug}`, 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      const lead = resolveExecutionLead(plan.text);
+      if (!lead.ok) {
+        notify(ctx, `계획의 실행 책임자 선언이 무효예요(${lead.reason}). 실행하지 않았어요.`, 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      const resolved = computeAvailability()[lead.lead];
+      if (!resolved || resolved.unavailable) {
+        notify(ctx, `${DISPLAY[lead.lead]} 역할의 모델을 사용할 수 없어 실행을 넘기지 않았어요.`, 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      const switched = await switchTo(lead.lead, { source: 'submit' });
+      if ((!switched.switched && switched.reason !== 'same') || switched.pending) {
+        notify(ctx, `${DISPLAY[lead.lead]} 역할·모델을 적용하지 못해 실행을 넘기지 않았어요.`, 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      if (switched.reason === 'same') {
+        // The role already matches; still make sure the live model and thinking
+        // are the ones this role resolves to before handing the plan over.
+        const applied = await applySessionModel(resolved, ctx);
+        if (!applied) {
+          notify(ctx, `${DISPLAY[lead.lead]} 역할·모델을 적용하지 못해 실행을 넘기지 않았어요.`, 'warning');
+          editor?.setText?.(original);
+          return;
+        }
+      }
+      if (current !== lead.lead
+        || !liveMatches(resolved.provider, resolved.modelId)
+        || (typeof resolved.thinking === 'string' && ctx.thinkingLevel !== resolved.thinking)) {
+        notify(ctx, '역할·모델이 실제 세션에 적용되지 않아 실행을 넘기지 않았어요.', 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      const final = planPath(cwd, slug);
+      if (!final || final.sha256 !== plan.sha256 || final.path !== plan.path) {
+        notify(ctx, '계획 파일이 실행 직전에 바뀌어 실행을 넘기지 않았어요. 새 /ulw-execute 요청으로 다시 확인하세요.', 'warning');
+        editor?.setText?.(original);
+        return;
+      }
+      pendingHandoff = createPlanHandoff({
+        sessionId: sessionKey(),
+        path: final.path,
+        text: final.text,
+        role: lead.lead,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        thinking: typeof resolved.thinking === 'string' ? resolved.thinking : ctx.thinkingLevel,
+      });
+      const command = `${parsed.command} ${slug}${parsed.options.length > 0 ? ` ${parsed.options.join(' ')}` : ''}`;
+      editor?.setText?.(command);
+      hostSubmit?.(command, details);
       editor?.setText?.('');
-      return;
+    } finally {
+      submitLock = false;
     }
-
-    hostSubmit?.(text, details);
   }
 
   async function onSessionStart(event, ctx) {
@@ -773,7 +965,6 @@ export function createOrchestrator(pi, options = {}) {
     sessionId = ctx.sessionManager?.getSessionId?.() ?? DEFAULT_SESSION_ID;
     adapterPresent = detectAdapter(ctx);
     adapterNoticeSent = false;
-    scaffoldPath = detectScaffoldPath(ctx);
     ownEntryIds.clear();
     pendingUpdates.length = 0;
     warningKeys.clear();
@@ -786,9 +977,18 @@ export function createOrchestrator(pi, options = {}) {
     const branch = getBranch();
     const reason = event?.reason;
     current = reason === 'new' ? 'sisyphus' : restoreAgentId(branch);
-    returnTo = null;
-    atlasArmed = false;
-    atlasWorkIds.clear();
+    if (current === 'atlas') {
+      // Atlas is retired from new selection. A resumed legacy session keeps its
+      // work IDs and checkpoints; the role moves to the legacy default.
+      current = 'sisyphus';
+      try {
+        appendIdentity(pi, 'sisyphus');
+      } catch {
+        // A host without appendEntry still gets the in-memory migration.
+      }
+    }
+    submitLock = false;
+    pendingHandoff = null;
     cursor = initialCursor(current);
     // Startup entries are not the owner teaching an agent: advance the cursor
     // without writing memory (never record memory in session_start).
@@ -850,27 +1050,25 @@ export function createOrchestrator(pi, options = {}) {
     }
     // Sisyphus is the host's own agent today. Returning a systemPrompt - even
     // the untouched base - marks it modified and drops the host's MCP
-    // post-processing. Only the three overlay agents replace the prompt.
-    if (current === 'sisyphus') return undefined;
+    // post-processing. Only Hephaestus keeps an overlay; Prometheus keeps its
+    // name and model preset but no prompt of its own.
+    if (current === 'sisyphus' || !overlays[current]) return undefined;
     return { systemPrompt: applyOverlay(event?.systemPrompt ?? '', current, overlays) };
   }
 
   function onToolCall(event, ctx) {
     if (!active) return undefined;
     ctxRef = ctx;
-    const cwdReal = realpathNearestAncestor(ctx?.cwd ?? process.cwd()) ?? ctx?.cwd ?? process.cwd();
-    let toolSchemas = null;
-    try {
-      toolSchemas = typeof pi.getAllTools === 'function' ? pi.getAllTools() : null;
-    } catch {
-      toolSchemas = null;
+    const name = String(event?.toolName ?? '');
+    if (pendingHandoff) {
+      if (name === 'read') {
+        observeHandoffReadCall(event, ctx);
+      } else if (name === 'task' || name === 'workflow') {
+        const blocked = handoffDelegationBlock(ctx);
+        if (blocked) return blocked;
+      }
     }
-    const result = verdict(event?.toolName, event?.input, {
-      agentId: current,
-      cwdReal,
-      toolSchemas,
-      scaffoldPath,
-    });
+    const result = verdict(name, event?.input, { agentId: current });
     if (result && result.block) {
       return { block: true, reason: blockReason(current, result.reason) };
     }
@@ -880,46 +1078,20 @@ export function createOrchestrator(pi, options = {}) {
   function onToolResult(event, ctx) {
     if (!active) return;
     ctxRef = ctx;
-    if (event?.isError) return;
+    if (event?.isError) {
+      if (pendingHandoff && event?.toolName === 'read') pendingHandoff.reads.delete(event.toolCallId);
+      return;
+    }
+    if (pendingHandoff && event?.toolName === 'read') observeHandoffReadResult(event, ctx);
+    // The handoff check stays until the first real delegation succeeds; a
+    // failed delegation keeps the evidence so a retry still has to match it.
+    if (pendingHandoff && pendingHandoff.status === 'delegated'
+      && (event?.toolName === 'task' || event?.toolName === 'workflow')) {
+      pendingHandoff = null;
+    }
     const path = event?.input?.path ?? event?.input?.file_path;
     if (!isUlwExecuteSkillPath(path)) return;
     observeUlwExecute();
-  }
-
-  async function onAgentEnd(event, ctx) {
-    if (!active || current !== 'atlas' || event?.willRetry || event?.aborted) return;
-    let works;
-    try {
-      const data = JSON.parse(readFileSync(join(ctx.cwd, '.omo', 'boulder.json'), 'utf8'));
-      works = data?.works;
-      if (!works || typeof works !== 'object' || Array.isArray(works)) return;
-      if (Object.values(works).some(work => !work || typeof work !== 'object'
-        || !Array.isArray(work.session_ids) || typeof work.status !== 'string')) return;
-    } catch {
-      return;
-    }
-    const ownSession = `senpi:${sessionKey()}`;
-    for (const [id, work] of Object.entries(works)) {
-      if (work.session_ids.includes(ownSession) && work.status === 'active') {
-        atlasArmed = true;
-        atlasWorkIds.add(id);
-      }
-    }
-    if (!atlasArmed) return;
-    const finished = [...atlasWorkIds].every(id => {
-      const work = works[id];
-      return !work || (work.session_ids.includes(ownSession)
-        && ['completed', 'done', 'abandoned'].includes(work.status));
-    });
-    if (!finished) return;
-    const target = returnTo ?? 'sisyphus';
-    const result = await switchTo(target, { source: 'return' });
-    if (result.switched) {
-      returnTo = null;
-      atlasArmed = false;
-      atlasWorkIds.clear();
-      notify(ctx, `실행이 끝나 ${DISPLAY[target]}(으)로 돌아왔어요.`, 'info');
-    }
   }
 
   function onSessionShutdown() {
@@ -927,6 +1099,8 @@ export function createOrchestrator(pi, options = {}) {
     completePending();
     reconcileMemoryNow();
     mirror.forget(sessionKey());
+    pendingHandoff = null;
+    submitLock = false;
     active = false;
   }
 
@@ -934,7 +1108,6 @@ export function createOrchestrator(pi, options = {}) {
   pi.on('input', onInput);
   pi.on('model_select', onModelSelect);
   pi.on('before_agent_start', onBeforeAgentStart, { previewSafe: true });
-  pi.on('agent_end', onAgentEnd);
   pi.on('tool_call', onToolCall);
   pi.on('tool_result', onToolResult);
   pi.on('session_shutdown', onSessionShutdown);
@@ -949,22 +1122,27 @@ export function createOrchestrator(pi, options = {}) {
         refreshContext();
         reconcileMemoryNow();
         const availability = computeAvailability();
-        const availableIds = AGENT_IDS.filter(agentId => !availability[agentId]?.unavailable);
+        const availableIds = SELECTABLE_AGENT_IDS.filter(agentId => !availability[agentId]?.unavailable);
         const availableNames = availableIds.map(agentId => DISPLAY[agentId]);
         const argument = String(args ?? '').trim();
 
         if (argument.length === 0) {
           const choice = await ctx.ui.select(AGENT_PICKER_TITLE, availableNames);
           if (choice === undefined || choice === null) return;
-          const picked = AGENT_IDS.find(agentId => agentId === choice || DISPLAY[agentId] === choice);
+          const picked = SELECTABLE_AGENT_IDS.find(agentId => agentId === choice || DISPLAY[agentId] === choice);
           if (picked) await switchTo(picked, { source: 'command' });
           return;
         }
 
-        const match = AGENT_IDS.find(agentId => agentId.toLowerCase() === argument.toLowerCase()
+        if (argument.toLowerCase() === 'atlas' || argument.toLowerCase() === DISPLAY.atlas.toLowerCase()) {
+          notify(ctx, 'Atlas는 퇴역했어요. 새 선택은 지원하지 않아요.', 'warning');
+          return;
+        }
+
+        const match = SELECTABLE_AGENT_IDS.find(agentId => agentId.toLowerCase() === argument.toLowerCase()
           || DISPLAY[agentId].toLowerCase() === argument.toLowerCase());
         if (!match) {
-          const allNames = AGENT_IDS.map(agentId => DISPLAY[agentId]).join(', ');
+          const allNames = SELECTABLE_AGENT_IDS.map(agentId => DISPLAY[agentId]).join(', ');
           notify(ctx, `알 수 없는 에이전트예요: ${argument}. 사용 가능: ${allNames}`, 'warning');
           return;
         }

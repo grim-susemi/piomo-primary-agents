@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOrchestrator } from '../src/core/orchestration.mjs';
+import { PLAN_BOOTSTRAP_TEXT, createOrchestrator } from '../src/core/orchestration.mjs';
 
-function setup(t, { gpt = true, idle = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'auto-return-'));
+function setup(t) {
+  const root = mkdtempSync(join(tmpdir(), 'piomo-return-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
   const agentDir = join(home, 'agent');
@@ -17,9 +17,15 @@ function setup(t, { gpt = true, idle = true } = {}) {
     'daily-heavy': { models: [{ providers: ['sub'], model: 'heavy' }] },
     'geeky-normal': { models: [{ providers: ['gpt'], model: 'gpt-geeky' }] },
   } } }));
-  const models = [{ provider: 'sub', id: 'daily' }, { provider: 'sub', id: 'heavy' }];
-  if (gpt) models.push({ provider: 'gpt', id: 'gpt-geeky' });
-  const handlers = new Map(), branch = [], notices = [], calls = [], submissions = [];
+  const models = [
+    { provider: 'sub', id: 'daily' },
+    { provider: 'sub', id: 'heavy' },
+    { provider: 'gpt', id: 'gpt-geeky' },
+  ];
+  const handlers = new Map();
+  const branch = [];
+  const notices = [];
+  const submissions = [];
   let editor;
   class Editor {
     constructor() { this.text = ''; }
@@ -32,8 +38,11 @@ function setup(t, { gpt = true, idle = true } = {}) {
   }
   const ctx = {
     mode: 'tui', hasUI: true, cwd: root, agentDir,
-    model: models[0], thinkingLevel: 'off', isIdle: () => idle,
-    modelRegistry: { find: (p, id) => models.find(m => m.provider === p && m.id === id), getAvailable: () => models },
+    model: models[0], thinkingLevel: 'off', isIdle: () => true,
+    modelRegistry: {
+      find: (provider, id) => models.find(model => model.provider === provider && model.id === id),
+      getAvailable: () => models,
+    },
     sessionManager: { getBranch: () => branch, getSessionId: () => 'one' },
     ui: {
       getEditorComponent: () => null,
@@ -42,13 +51,14 @@ function setup(t, { gpt = true, idle = true } = {}) {
         editor.onSubmit = text => submissions.push({ text, role: orchestration.current });
       },
       setWidget() {}, setStatus() {}, setTitle() {}, notify: message => notices.push(message),
+      async select() { return undefined; },
     },
   };
   const pi = {
     sessionKind: 'interactive',
-    on: (name, fn) => handlers.set(name, fn),
+    on: (name, fn) => { handlers.set(name, fn); return () => {}; },
     registerCommand() {},
-    async setSessionModel(model) { calls.push(model); if (model) ctx.model = model; return true; },
+    async setSessionModel(model) { if (model) ctx.model = model; return true; },
     setSessionThinkingLevel() {},
     appendEntry(type, data) { branch.push({ type: 'custom', customType: type, id: String(branch.length), data }); },
   };
@@ -56,74 +66,43 @@ function setup(t, { gpt = true, idle = true } = {}) {
   const fire = (name, event = {}) => handlers.get(name)(event, ctx);
   const start = reason => fire('session_start', { reason });
   const tab = async () => { editor.handleInput('\t'); await orchestration.settled(); };
-  const submit = text => editor.onSubmit(text);
-  const boulder = works => writeFileSync(join(root, '.omo', 'boulder.json'), JSON.stringify({ works }));
-  const work = status => ({ session_ids: ['senpi:one'], status });
-  const end = event => fire('agent_end', { type: 'agent_end', ...event });
-  return { root, orchestration, start, tab, submit, boulder, work, end, notices, calls, submissions };
+  return { root, orchestration, start, tab, submissions, notices, handlers, get editor() { return editor; } };
 }
 
-test('plan entry switches before submission and preserves origin from Atlas', async t => {
-  const s = setup(t); await s.start('resume'); await s.tab();
-  await s.submit('/ulw-execute p'); await s.submit('/skill:ulw-plan p');
-  assert.equal(s.submissions.at(-1).role, 'prometheus');
-  await s.tab(); assert.equal(s.orchestration.current, 'hephaestus');
-  const busy = setup(t, { idle: false }); await busy.start('resume');
-  await busy.submit('/skill:ulw-plan p');
-  assert.equal(busy.orchestration.current, 'sisyphus');
-  assert.equal(busy.submissions.length, 0);
-});
-test('execute entry switches to Atlas before submission', async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  assert.equal(s.submissions.at(-1).role, 'atlas');
-});
-test('returns after observed work removal', async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  s.boulder({ a: s.work('active') }); await s.end(); s.boulder({}); await s.end();
-  assert.equal(s.orchestration.current, 'sisyphus');
-});
-test('returns after observed work completes', async t => {
-  const s = setup(t); await s.start('resume'); await s.tab(); await s.submit('/ulw-execute p');
-  s.boulder({ a: s.work('active') }); await s.end(); s.boulder({ a: s.work('completed') }); await s.end();
+test('Tab cycles Sisyphus and Hephaestus', async t => {
+  const s = setup(t);
+  await s.start('resume');
+  await s.tab();
   assert.equal(s.orchestration.current, 'hephaestus');
-});
-for (const status of ['paused', 'blocked']) test(`stays on Atlas when ${status}`, async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  s.boulder({ a: s.work('active') }); await s.end(); s.boulder({ a: s.work(status) }); await s.end();
-  assert.equal(s.orchestration.current, 'atlas');
-});
-test('ignores retry and user cancellation', async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  s.boulder({ a: s.work('active') }); await s.end(); s.boulder({});
-  await s.end({ willRetry: true }); await s.end({ aborted: true, abortSource: 'user' });
-  assert.equal(s.orchestration.current, 'atlas');
-});
-test('never-observed work, missing file, malformed data and active work do not return', async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  await s.end(); s.boulder({ other: { session_ids: ['senpi:other'], status: 'active' } }); await s.end();
-  s.boulder({}); await s.end();
-  writeFileSync(join(s.root, '.omo', 'boulder.json'), '{'); await s.end();
-  s.boulder({ a: s.work('active') }); await s.end(); await s.end();
-  assert.equal(s.orchestration.current, 'atlas');
-  rmSync(join(s.root, '.omo', 'boulder.json')); await s.end();
-  assert.equal(s.orchestration.current, 'atlas');
-});
-test('Tab toggles two primary roles', async t => {
-  const s = setup(t); await s.start('resume'); await s.tab();
-  assert.equal(s.orchestration.current, 'hephaestus'); await s.tab();
+  await s.tab();
   assert.equal(s.orchestration.current, 'sisyphus');
 });
-test('Tab returns from Prometheus and Atlas', async t => {
-  const s = setup(t); await s.start('resume'); await s.tab();
-  await s.submit('/skill:ulw-plan p'); await s.tab(); assert.equal(s.orchestration.current, 'hephaestus');
-  await s.submit('/ulw-execute p'); await s.tab(); assert.equal(s.orchestration.current, 'hephaestus');
+
+test('Tab from Prometheus returns to Sisyphus when no role was saved', async t => {
+  const s = setup(t);
+  await s.start('resume');
+  await s.orchestration.switchTo('prometheus');
+  await s.tab();
+  assert.equal(s.orchestration.current, 'sisyphus');
 });
-test('unavailable Hephaestus leaves Sisyphus and sends one notice without model calls', async t => {
-  const s = setup(t, { gpt: false }); await s.start('resume'); await s.tab();
-  assert.equal(s.orchestration.current, 'sisyphus'); assert.equal(s.calls.length, 0); assert.equal(s.notices.length, 1);
+
+test('an execute request without a plan submits the Native bootstrap and never enters Atlas', async t => {
+  const s = setup(t);
+  await s.start('resume');
+  await s.editor.onSubmit('/ulw-execute');
+  assert.equal(s.orchestration.current, 'sisyphus');
+  assert.equal(s.submissions.length, 1);
+  assert.equal(s.submissions[0].text, PLAN_BOOTSTRAP_TEXT);
+  assert.equal(s.submissions[0].role, 'sisyphus');
 });
-test('reload does not restore arming', async t => {
-  const s = setup(t); await s.start('resume'); await s.submit('/ulw-execute p');
-  s.boulder({ a: s.work('active') }); await s.end(); await s.start('reload');
-  s.boulder({}); await s.end(); assert.equal(s.orchestration.current, 'atlas');
+
+test('agent_end and boulder changes no longer switch the role', async t => {
+  const s = setup(t);
+  await s.start('resume');
+  await s.orchestration.switchTo('hephaestus');
+  assert.equal(s.handlers.has('agent_end'), false);
+  writeFileSync(join(s.root, '.omo', 'boulder.json'), JSON.stringify({
+    works: { a: { session_ids: ['senpi:one'], status: 'completed' } },
+  }));
+  assert.equal(s.orchestration.current, 'hephaestus');
 });

@@ -1,16 +1,16 @@
 # piomo-primary-agents
 
-> **한국어 요약:** senpi TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고 계획·실행 요청으로 Prometheus와 Atlas에 들어가는 확장입니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
+> **한국어 요약:** senpi TUI에서 Tab으로 Sisyphus와 Hephaestus를 전환하고, 승인된 계획의 실행 책임자에 따라 실행 역할을 고르는 확장입니다. 자세한 설명서는 [README.ko.md](README.ko.md)에 있습니다.
 
-A senpi (pi) extension for four primary agents. Tab toggles Sisyphus and Hephaestus; planning and execution requests enter Prometheus and Atlas. It acts only in the main TUI session.
+A senpi (pi) extension for three selectable primary agents. Tab toggles Sisyphus and Hephaestus; `/ulw-execute` applies the execution lead declared in the approved plan. Atlas is retired from new selection. It acts only in the main TUI session.
 
 The Korean README is the main guide. This page is the short English version.
 
 ## Use
 
-**Switch with Tab.** Tab toggles Sisyphus and Hephaestus. From Prometheus or Atlas it returns to the saved role, or Sisyphus if none was saved. If Hephaestus is unavailable, Sisyphus stays active and a notice appears. `/agent` can select any available role.
+**Switch with Tab.** Tab toggles Sisyphus and Hephaestus. From Prometheus it returns to Sisyphus. If Hephaestus is unavailable, Sisyphus stays active and a notice appears. `/agent` can select Sisyphus, Hephaestus or Prometheus; `/agent atlas` is refused because Atlas is retired.
 
-An explicit `/skill:ulw-plan` request enters Prometheus, and `/ulw-execute` or `/skill:ulw-execute` enters Atlas. After Atlas observes this session's active boulder work and that work is removed or completes, it returns to the saved role. The saved return role and arming state are not restored on reload or resume.
+`/skill:ulw-plan` no longer switches roles: the request goes straight to the Native skill. `/ulw-execute` or `/skill:ulw-execute` selects one plan, reads its `Execution lead:` field, applies that role and model, verifies the live session, and only then forwards the same plan name to the Native execution skill. With no selectable plan it forwards the Native `/skill:ulw-plan` bootstrap request once and executes nothing.
 
 Tab stays a completion key when:
 - the autocomplete list is open;
@@ -31,14 +31,11 @@ Memory for the current roster `rev` wins, then the roster pin, then the lane def
 
 The Windows switcher does not bump roster `rev`, so changes made there cannot override existing matching memory. Use the board to reset memory or change the pin. Unusable higher-priority candidates show their model, registration/authentication reason and the actual substitute once per session. File warnings appear once per code and file. Only Muse models may use `opencode-go` through a lane; explicit memory, pins and main selections keep their own priority, and other providers remain available.
 
-**Prometheus planning.** On Prometheus, just ask in plain words ("plan the login screen rework"). That opens the ulw-plan flow and its review without typing a command; `/skill:ulw-plan` also works. With the recorded `plan-review-unlock` policy, review remains available after execution and another execution does not relock it. Explicit owner requests and actual plan artifacts remain required. The optional gate adapter is only needed for the earlier execution-locking policy and is not installed automatically. Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
+**Prometheus is preset-only.** Prometheus keeps its display name and provider/model/thinking preset. It has no prompt overlay, no PiOMO tool policy and no input rewrite; plain text is sent unchanged, and `/skill:ulw-plan` is the way to start a plan. With the recorded `plan-review-unlock` policy, review remains available after execution and another execution does not relock it. Explicit owner requests and actual plan artifacts remain required. The optional gate adapter is only needed for the earlier execution-locking policy and is not installed automatically. Install, removal, rollback and the omo-update routine (Korean): [docs/gate-adapter.ko.md](docs/gate-adapter.ko.md).
 
-**Limits.**
-- Prometheus may only change `.md` files under `<cwd>/.omo/`, runs a small read/plan bash allowlist, and delegates only to read-only agents.
-- Atlas may only change files under `<cwd>/.omo/`.
-- Sisyphus and Hephaestus are unrestricted.
+**Execution handoff.** `/ulw-execute <plan>` reads `Execution lead: sisyphus|hephaestus` and `Execution rationale:` from the plan's TL;DR. Missing fields keep the legacy Sisyphus default; a single field, an unknown role or an empty reason blocks execution. Multiple plans open one selection question, and an explicit name that does not exist never falls through to another plan. Immediately before forwarding, the router stores the plan's normalized path, SHA-256 and body; the first `task`/`workflow` delegation is allowed only after the Native skill's own `read` returns those exact bytes. A missing read, a different plan read, a changed body, a changed role/model or a changed plan file blocks the delegation and requires a new explicit execution. A second execute submission while one is being routed is consumed with a notice.
 
-Known residuals, left on purpose: the limits are per tool, so a direct file write from inside an eval cell isn't blocked; Atlas bash is open.
+**Atlas retirement.** New Atlas selection, its prompt and its return-on-completion behavior are gone. A resumed legacy Atlas session keeps its work IDs and checkpoints and continues as Sisyphus; `/agent atlas` is refused.
 
 ## Install and uninstall
 
