@@ -206,6 +206,7 @@ export function createOrchestrator(pi, options = {}) {
   let mainModel = null;
   let current = 'sisyphus';
   let submitLock = false;
+  const forwardedSubmits = new Set();
   let pendingHandoff = null;
   let cursor = initialCursor('sisyphus');
   let sessionId = DEFAULT_SESSION_ID;
@@ -896,6 +897,18 @@ export function createOrchestrator(pi, options = {}) {
     return { block: true, reason };
   }
 
+  function forwardToHost(hostSubmit, text, details) {
+    forwardedSubmits.add(text);
+    try {
+      hostSubmit?.(text, details);
+    } finally {
+      // Keep the marker through the host's own onSubmit echo, then release it
+      // so a later user submission of the same text is not swallowed.
+      const timer = setTimeout(() => forwardedSubmits.delete(text), 0);
+      timer.unref?.();
+    }
+  }
+
   async function handleSubmit(editor, hostSubmit, text, details, ctx) {
     if (!active) {
       hostSubmit?.(text, details);
@@ -913,6 +926,14 @@ export function createOrchestrator(pi, options = {}) {
       return;
     }
     if (submitLock) {
+      // The router's own forward can re-enter onSubmit while the first
+      // execution request is still unwinding. Let that exact forwarded text
+      // through once; every other user submission keeps the lock notice.
+      if (forwardedSubmits.has(text)) {
+        forwardedSubmits.delete(text);
+        hostSubmit?.(text, details);
+        return;
+      }
       notify(ctx, SUBMIT_LOCKED_NOTICE, 'info');
       return;
     }
@@ -943,7 +964,7 @@ export function createOrchestrator(pi, options = {}) {
       if (selection.kind === 'new') {
         // No selectable plan: hand the Native plan bootstrap the literal request once.
         editor?.setText?.(PLAN_BOOTSTRAP_TEXT);
-        hostSubmit?.(PLAN_BOOTSTRAP_TEXT, details);
+        forwardToHost(hostSubmit, PLAN_BOOTSTRAP_TEXT, details);
         editor?.setText?.('');
         return;
       }
@@ -1025,7 +1046,7 @@ export function createOrchestrator(pi, options = {}) {
       else forwarded[parsed.nameIndex] = slug;
       const command = `${parsed.command} ${forwarded.map(quoteCommandArg).join(' ')}`;
       editor?.setText?.(command);
-      hostSubmit?.(command, details);
+      forwardToHost(hostSubmit, command, details);
       editor?.setText?.('');
     } catch (error) {
       notify(ctx, `실행 요청을 처리하지 못했어요: ${error.message}`, 'warning');

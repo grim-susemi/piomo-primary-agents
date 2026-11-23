@@ -80,7 +80,8 @@ class FakeBase {
   setText(text) { this.text = text; }
 }
 
-function fakeUi(log) {
+function fakeUi(log, options = {}) {
+  let hostAttempts = 0;
   const calls = {
     notify: [], status: [], title: [], widget: [], editorSet: 0, select: [], hostSubmit: [],
   };
@@ -96,7 +97,15 @@ function fakeUi(log) {
       if (next) {
         editor = next({}, {}, keybindings);
         // The host assigns onSubmit after the factory returns (P7).
-        editor.onSubmit = (text, details) => calls.hostSubmit.push({ text, details });
+        editor.onSubmit = (text, details) => {
+          // Model a host submit loop: the first call re-enters the editor's
+          // onSubmit; the second call is the actual delivery.
+          if (options.hostSubmitReenter === true) {
+            hostAttempts += 1;
+            if (hostAttempts === 1) return editor.onSubmit(text, details);
+          }
+          calls.hostSubmit.push({ text, details });
+        };
       }
     },
     setWidget(_key, content, options) { calls.widget.push({ key: _key, content, options }); },
@@ -144,7 +153,7 @@ function makeSession(t, options = {}) {
   const sandbox = makeSandbox(t);
   const log = [];
   const branch = options.branch ?? resumedBranch('sisyphus');
-  const uiCtl = fakeUi(log);
+  const uiCtl = fakeUi(log, options);
   const registry = options.registry === undefined ? fakeRegistry() : options.registry;
   const ctx = {
     mode: options.mode ?? 'tui',
@@ -473,6 +482,23 @@ test('streaming keeps the execute text and does not submit', async t => {
   assert.equal(session.ui.calls.hostSubmit.length, 0);
   assert.equal(session.ui.editor.getText(), '/ulw-execute later');
   assert.equal(session.ui.calls.notify.at(-1).message, STREAMING_EXECUTE_NOTICE);
+});
+
+test('the router forward runs once when the host re-enters onSubmit after a role switch', async t => {
+  const session = makeSession(t, { hostSubmitReenter: true });
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  assert.equal(session.orchestration.current, 'hephaestus');
+  assert.equal(session.ui.calls.hostSubmit.length, 1, 'the forward must reach the host exactly once');
+  assert.equal(session.ui.calls.hostSubmit[0].text, '/ulw-execute lead-hephaestus');
+  assert.equal(
+    session.ui.calls.notify.some(({ message }) => message === SUBMIT_LOCKED_NOTICE),
+    false,
+    'the router forward must not trigger the user-submit lock notice',
+  );
 });
 
 test('a concurrent execute submission is consumed while the first one is in flight', async t => {
