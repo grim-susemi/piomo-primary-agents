@@ -268,8 +268,8 @@ test('Muse is admitted for an opencode-go lane', async t => {
     daily: [{ providers: ['opencode-go'], model: 'muse' }],
   });
   await s.start();
-  resolved(t, s, 'opencode-go/muse', 'atlas', 'lane');
-  await s.orchestrator.switchTo('atlas');
+  resolved(t, s, 'opencode-go/muse', 'prometheus', 'lane');
+  await s.orchestrator.switchTo('prometheus');
   assert.deepEqual(s.ctx.model, model('opencode-go', 'muse'));
   assert.equal(s.warnings.length, 0);
 });
@@ -280,10 +280,10 @@ test('non-Muse opencode-go lane candidates are filtered while other providers re
     daily: [{ providers: ['opencode-go', 'sub'], model: 'kimi-k3' }],
   });
   await s.start();
-  resolved(t, s, 'sub/kimi-k3', 'atlas', 'lane');
-  await s.orchestrator.switchTo('atlas');
+  resolved(t, s, 'sub/kimi-k3', 'prometheus', 'lane');
+  await s.orchestrator.switchTo('prometheus');
   assert.deepEqual(s.ctx.model, model('sub', 'kimi-k3'));
-  const warning = s.warnings.filter(text => text.startsWith('Atlas lane'));
+  const warning = s.warnings.filter(text => text.startsWith('Prometheus lane'));
   assert.equal(warning.length, 1);
   assert.match(warning[0], /opencode-go\/kimi-k3: Muse-only lane; using sub\/kimi-k3/);
   t.diagnostic(`warning ${warning[0]}`);
@@ -295,8 +295,8 @@ test('a providerless lane retains non-opencode-go candidates', async t => {
     daily: ['kimi-k3'],
   });
   await s.start();
-  resolved(t, s, 'sub/kimi-k3', 'atlas');
-  await s.orchestrator.switchTo('atlas');
+  resolved(t, s, 'sub/kimi-k3', 'prometheus');
+  await s.orchestrator.switchTo('prometheus');
   assert.deepEqual(s.ctx.model, model('sub', 'kimi-k3'));
 });
 

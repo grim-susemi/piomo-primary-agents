@@ -94,9 +94,13 @@ export function selectExecutionPlan({
 } = {}) {
   const available = unique(availablePlans);
   if (explicitName) {
-    const matches = available.filter((name) => name === explicitName);
-    if (matches.length === 1) return { kind: 'explicit', slug: explicitName };
-    return { kind: 'blocked', reason: 'explicit-not-found' };
+    const exact = available.filter((name) => name === explicitName);
+    if (exact.length === 1) return { kind: 'explicit', slug: exact[0] };
+    // Native accepts a partial stem when exactly one plan matches it; an
+    // ambiguous prefix is not a guess, it is a stop.
+    const prefixed = available.filter((name) => name.startsWith(explicitName));
+    if (prefixed.length === 1) return { kind: 'explicit', slug: prefixed[0] };
+    return { kind: 'blocked', reason: prefixed.length > 1 ? 'explicit-ambiguous' : 'explicit-not-found' };
   }
 
   const active = unique(activePlans);

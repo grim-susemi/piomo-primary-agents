@@ -14,7 +14,7 @@
 // Identity and tool policy switch immediately; only the model may stay pending
 // until the runtime commits the next `model_change`.
 import { readFileSync, readdirSync } from 'node:fs';
-import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { AGENT_IDS, DISPLAY, SELECTABLE_AGENT_IDS } from '../../contract/constants.mjs';
 import { atomicWriteJson } from '../../contract/atomic.mjs';
 import { readLaneOverrides } from '../../contract/jsonc.mjs';
@@ -46,6 +46,11 @@ export const STREAMING_EXECUTE_NOTICE = '응답이 끝난 뒤 Enter를 다시 �
 export const SUBMIT_LOCKED_NOTICE = '같은 세션의 실행 요청을 처리 중이에요. 끝난 뒤 다시 보내 주세요.';
 export const EXECUTE_PICKER_TITLE = '실행할 계획 선택';
 export const PLAN_BOOTSTRAP_TEXT = '/skill:ulw-plan 실행할 목표를 먼저 확인하고, 승인 요약에 시지푸스 또는 헤파이토스 총괄 한 명과 선택 이유를 제시하세요. 승인 후 완성본 TL;DR 끝에 Execution lead: sisyphus|hephaestus 중 한 값과 Execution rationale: 이유를 각각 한 줄로 기록하세요. 계획 작성 및 검토가 끝나면 /ulw-execute <slug> 명령을 안내하세요.';
+
+// Options whose next token is a value, not the plan name.
+const EXECUTE_VALUE_OPTIONS = new Set([
+  '--worktree', '--model', '--out', '--session', '--plan', '--cwd', '--repo', '--branch',
+]);
 
 const RING = Object.freeze(['sisyphus', 'hephaestus']);
 const DEFAULT_SESSION_ID = 'default';
@@ -624,7 +629,7 @@ export function createOrchestrator(pi, options = {}) {
 
     if (held) pendingModel.fromIndex = getBranch().length;
     refresh();
-    return { switched: true, agentId: destination, pending: held };
+    return { switched: true, agentId: destination, pending: held, modelApplied: ok !== false };
   }
 
   function switchTo(targetId, switchOptions = {}) {
@@ -633,6 +638,10 @@ export function createOrchestrator(pi, options = {}) {
       return Promise.resolve({ switched: false, reason: 'unknown-agent' });
     }
     if (!active) return Promise.resolve({ switched: false, reason: 'inactive' });
+    if (targetId === 'atlas') {
+      notify(ctxRef, 'Atlas는 퇴역했어요. 새 선택은 지원하지 않아요.', 'warning');
+      return Promise.resolve({ switched: false, reason: 'retired' });
+    }
 
     switching += 1;
     const run = chain.then(
@@ -724,19 +733,69 @@ export function createOrchestrator(pi, options = {}) {
     return { active: [...active].sort(), paused: [...paused].sort() };
   }
 
+  function isPlanRequestText(text) {
+    return typeof text === 'string'
+      && (text === '/skill:ulw-plan' || text.startsWith('/skill:ulw-plan '));
+  }
+
+  function splitCommandArgs(text) {
+    const tokens = [];
+    let current = '';
+    let quote = null;
+    for (const char of text) {
+      if (quote) {
+        if (char === quote) quote = null;
+        else current += char;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        // A quote starts a value only at the beginning of a token; an
+        // apostrophe inside a Windows path (C:/O'Neil) is literal.
+        if (current.length === 0) {
+          quote = char;
+          continue;
+        }
+        current += char;
+        continue;
+      }
+      if (/\s/.test(char)) {
+        if (current.length > 0) {
+          tokens.push(current);
+          current = '';
+        }
+        continue;
+      }
+      current += char;
+    }
+    if (current.length > 0) tokens.push(current);
+    return tokens;
+  }
+
+  function quoteCommandArg(token) {
+    return /\s/.test(token) ? `"${token.replace(/"/g, '\\"')}"` : token;
+  }
+
   function parseExecute(text) {
     const command = ['/skill:ulw-execute', '/ulw-execute']
       .find(prefix => text === prefix || text.startsWith(`${prefix} `));
     if (!command) return null;
     const rest = text.slice(command.length).trim();
-    const tokens = rest.length === 0 ? [] : rest.split(/\s+/);
+    const tokens = rest.length === 0 ? [] : splitCommandArgs(rest);
     let nameIndex = -1;
     for (let index = 0; index < tokens.length; index += 1) {
-      if (!tokens[index].startsWith('-')) { nameIndex = index; break; }
+      const token = tokens[index];
+      if (token.startsWith('-')) {
+        if (EXECUTE_VALUE_OPTIONS.has(token) && index + 1 < tokens.length
+          && !tokens[index + 1].startsWith('-')) {
+          index += 1;
+        }
+        continue;
+      }
+      nameIndex = index;
+      break;
     }
     const name = nameIndex === -1 ? null : tokens[nameIndex];
-    const options = nameIndex === -1 ? tokens : tokens.filter((_, index) => index !== nameIndex);
-    return { command, name, options };
+    return { command, name, nameIndex, tokens };
   }
 
   function planPath(cwd, slug) {
@@ -762,7 +821,8 @@ export function createOrchestrator(pi, options = {}) {
 
   function isPlanPath(candidate, cwd) {
     if (typeof candidate !== 'string') return false;
-    const normalized = slashed(realpathNearestAncestor(candidate) ?? resolvePath(candidate));
+    const absolute = isAbsolute(candidate) ? candidate : resolvePath(cwd, candidate);
+    const normalized = slashed(realpathNearestAncestor(absolute) ?? absolute);
     const dir = slashed(realpathNearestAncestor(join(cwd, '.omo', 'plans')) ?? resolvePath(join(cwd, '.omo', 'plans')));
     return normalized.startsWith(`${dir}/`) && normalized.endsWith('.md');
   }
@@ -771,8 +831,8 @@ export function createOrchestrator(pi, options = {}) {
     if (selection.reason === 'explicit-not-found') {
       return '명시한 계획을 찾지 못했어요. 다른 계획으로 대체하지 않았어요.';
     }
-    if (selection.reason === 'explicit-duplicate') {
-      return '같은 이름의 계획이 여러 개라 실행하지 않았어요.';
+    if (selection.reason === 'explicit-ambiguous') {
+      return '여러 계획이 그 이름으로 시작해 실행하지 않았어요. 더 정확한 이름을 주세요.';
     }
     return `계획 선택을 막았어요(${selection.reason}).`;
   }
@@ -783,9 +843,12 @@ export function createOrchestrator(pi, options = {}) {
     const path = input.path ?? input.file_path;
     if (typeof path !== 'string') return;
     const cwd = ctx?.cwd ?? process.cwd();
-    const samePath = slashed(realpathNearestAncestor(path) ?? resolvePath(path))
+    // The host resolves a relative read against the session cwd, not this
+    // process's cwd; use the same base so a relative plan read still matches.
+    const absolute = isAbsolute(path) ? path : resolvePath(cwd, path);
+    const samePath = slashed(realpathNearestAncestor(absolute) ?? absolute)
       === slashed(pendingHandoff.path);
-    const planRead = !samePath && isPlanPath(path, cwd);
+    const planRead = !samePath && isPlanPath(absolute, cwd);
     const action = beginRead(pendingHandoff, {
       toolCallId: event?.toolCallId,
       input,
@@ -814,7 +877,7 @@ export function createOrchestrator(pi, options = {}) {
     }
   }
 
-  function handoffDelegationBlock(ctx) {
+  function handoffDelegationBlock(event, ctx) {
     if (!pendingHandoff) return null;
     const live = {
       role: current,
@@ -825,6 +888,7 @@ export function createOrchestrator(pi, options = {}) {
     const block = delegationVerdict(pendingHandoff, {
       live,
       fileSha: planTextAt(pendingHandoff.path),
+      toolCallId: event?.toolCallId,
     });
     if (!block) return null;
     const reason = handoffBlockReason(pendingHandoff.reason ?? 'read-required');
@@ -842,16 +906,19 @@ export function createOrchestrator(pi, options = {}) {
     reconcileMemoryNow();
 
     if (!isUlwExecute(text)) {
+      // A new Native plan request is unrelated to a pending execution handoff;
+      // its own planning/review work must not be blocked by the old request.
+      if (pendingHandoff && isPlanRequestText(text)) pendingHandoff = null;
       hostSubmit?.(text, details);
+      return;
+    }
+    if (submitLock) {
+      notify(ctx, SUBMIT_LOCKED_NOTICE, 'info');
       return;
     }
     if (!liveIdle(ctx)) {
       notify(ctx, STREAMING_EXECUTE_NOTICE, 'info');
       editor?.setText?.(text);
-      return;
-    }
-    if (submitLock) {
-      notify(ctx, SUBMIT_LOCKED_NOTICE, 'info');
       return;
     }
     submitLock = true;
@@ -862,6 +929,9 @@ export function createOrchestrator(pi, options = {}) {
         hostSubmit?.(original, details);
         return;
       }
+      // A new explicit execution replaces any previous handoff record, even if
+      // this attempt later fails selection or validation.
+      pendingHandoff = null;
       const cwd = ctx?.cwd ?? process.cwd();
       const boulder = boulderPlans(cwd, sessionKey());
       const selection = selectExecutionPlan({
@@ -911,7 +981,8 @@ export function createOrchestrator(pi, options = {}) {
         return;
       }
       const switched = await switchTo(lead.lead, { source: 'submit' });
-      if ((!switched.switched && switched.reason !== 'same') || switched.pending) {
+      if ((!switched.switched && switched.reason !== 'same') || switched.pending
+        || switched.modelApplied === false) {
         notify(ctx, `${DISPLAY[lead.lead]} 역할·모델을 적용하지 못해 실행을 넘기지 않았어요.`, 'warning');
         editor?.setText?.(original);
         return;
@@ -949,10 +1020,16 @@ export function createOrchestrator(pi, options = {}) {
         modelId: resolved.modelId,
         thinking: typeof resolved.thinking === 'string' ? resolved.thinking : ctx.thinkingLevel,
       });
-      const command = `${parsed.command} ${slug}${parsed.options.length > 0 ? ` ${parsed.options.join(' ')}` : ''}`;
+      const forwarded = parsed.tokens.slice();
+      if (parsed.nameIndex === -1) forwarded.unshift(slug);
+      else forwarded[parsed.nameIndex] = slug;
+      const command = `${parsed.command} ${forwarded.map(quoteCommandArg).join(' ')}`;
       editor?.setText?.(command);
       hostSubmit?.(command, details);
       editor?.setText?.('');
+    } catch (error) {
+      notify(ctx, `실행 요청을 처리하지 못했어요: ${error.message}`, 'warning');
+      editor?.setText?.(original);
     } finally {
       submitLock = false;
     }
@@ -1067,7 +1144,7 @@ export function createOrchestrator(pi, options = {}) {
       if (name === 'read') {
         observeHandoffReadCall(event, ctx);
       } else if (name === 'task' || name === 'workflow') {
-        const blocked = handoffDelegationBlock(ctx);
+        const blocked = handoffDelegationBlock(event, ctx);
         if (blocked) return blocked;
       }
     }
@@ -1083,19 +1160,22 @@ export function createOrchestrator(pi, options = {}) {
     ctxRef = ctx;
     if (event?.isError) {
       if (pendingHandoff && event?.toolName === 'read') pendingHandoff.reads.delete(event.toolCallId);
-      if (pendingHandoff && pendingHandoff.status === 'delegated'
-        && (event?.toolName === 'task' || event?.toolName === 'workflow')) {
+      if (pendingHandoff && (event?.toolName === 'task' || event?.toolName === 'workflow')
+        && pendingHandoff.admitted.has(event.toolCallId)) {
         // A failed delegation does not discard the check: the retry must pass
         // the same read, hash and role checks again.
-        pendingHandoff.status = 'verified';
+        pendingHandoff.admitted.delete(event.toolCallId);
+        if (pendingHandoff.admitted.size === 0 && pendingHandoff.status === 'admitted') {
+          pendingHandoff.status = 'verified';
+        }
       }
       return;
     }
     if (pendingHandoff && event?.toolName === 'read') observeHandoffReadResult(event, ctx);
-    // The handoff check stays until the first real delegation succeeds; a
-    // failed delegation keeps the evidence so a retry still has to match it.
-    if (pendingHandoff && pendingHandoff.status === 'delegated'
-      && (event?.toolName === 'task' || event?.toolName === 'workflow')) {
+    // The handoff check stays until a result for an admitted delegation
+    // succeeds; a failed one keeps the evidence for the retry.
+    if (pendingHandoff && (event?.toolName === 'task' || event?.toolName === 'workflow')
+      && pendingHandoff.admitted.has(event.toolCallId)) {
       pendingHandoff = null;
     }
     const path = event?.input?.path ?? event?.input?.file_path;

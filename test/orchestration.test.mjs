@@ -337,6 +337,8 @@ test('/agent: the picker lists three selectable agents, Atlas is refused, unknow
   await command.handler('atlas', session.ctx);
   assert.equal(session.orchestration.current, 'prometheus');
   assert.match(session.ui.calls.notify.at(-1).message, /Atlas는 퇴역/);
+  const direct = await session.orchestration.switchTo('atlas');
+  assert.equal(direct.reason, 'retired');
 
   const entriesBefore = entryAgents(session).length;
   await command.handler('nobody', session.ctx);
@@ -379,7 +381,7 @@ test('options and the original command form are preserved in the forwarded comma
   await session.ui.editor.onSubmit('/skill:ulw-execute --light lead-hephaestus --make-pr');
 
   assert.equal(session.ui.calls.hostSubmit.length, 1);
-  assert.equal(session.ui.calls.hostSubmit[0].text, '/skill:ulw-execute lead-hephaestus --light --make-pr');
+  assert.equal(session.ui.calls.hostSubmit[0].text, '/skill:ulw-execute --light lead-hephaestus --make-pr');
 });
 
 test('an explicit name that does not exist never falls through to another plan', async t => {
@@ -531,7 +533,7 @@ test('a matching full read allows the first task and workflow delegation', async
 
   await readPlan(session, planPath(session.sandbox, 'lead-hephaestus'), body);
   assert.equal(await taskCall(session, 'task-1'), undefined);
-  assert.equal(await taskCall(session, 'task-2'), undefined);
+  assert.equal(await taskCall(session, 'task-2', 'workflow'), undefined);
 });
 
 test('the handoff record is discarded after the first delegation succeeds', async t => {
@@ -569,6 +571,163 @@ test('a failed delegation keeps the check active for the retry', async t => {
   const blocked = await taskCall(session, 'task-2');
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /바뀌었어요/);
+});
+
+test('a truncated read does not cover the lines it did not return', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  const lines = body.split('\n');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await session.fire('tool_call', {
+    type: 'tool_call', toolName: 'read', toolCallId: 'read-1', input: { path, offset: 1, limit: lines.length },
+  });
+  await session.fire('tool_result', {
+    type: 'tool_result',
+    toolName: 'read',
+    toolCallId: 'read-1',
+    input: { path },
+    content: [{ type: 'text', text: lines.slice(0, 2).join('\n') }],
+    isError: false,
+    details: { truncation: { truncated: true, truncatedBy: 'lines', outputLines: 2, totalLines: lines.length, content: '', totalBytes: 0 } },
+  });
+
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /읽어야/);
+});
+
+test('a second delegation after admission re-checks the plan bytes', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await readPlan(session, path, body);
+
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+  writeFileSync(path, `${body}\nchanged\n`, 'utf8');
+  const blocked = await taskCall(session, 'task-2');
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /바뀌었어요/);
+});
+
+test('a relative plan read is resolved against the session cwd', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, '.omo/plans/lead-hephaestus.md', body);
+  assert.equal(await taskCall(session), undefined);
+});
+
+test('an option value before the plan name is not parsed as the plan name', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/ulw-execute --worktree C:/tmp/wt lead-hephaestus --light');
+
+  assert.equal(session.orchestration.current, 'hephaestus');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/ulw-execute --worktree C:/tmp/wt lead-hephaestus --light');
+});
+
+test('a unique partial plan stem is accepted and an ambiguous one is refused', async t => {
+  const partial = makeSession(t);
+  writePlan(partial.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  writePlan(partial.sandbox, 'lead-sisyphus', 'Execution lead: sisyphus\nExecution rationale: 이유');
+  await partial.start('resume');
+  await partial.ui.editor.onSubmit('/ulw-execute lead-heph');
+  assert.equal(partial.orchestration.current, 'hephaestus');
+  assert.equal(partial.ui.calls.hostSubmit.at(-1).text, '/ulw-execute lead-hephaestus');
+
+  const ambiguous = makeSession(t);
+  writePlan(ambiguous.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  writePlan(ambiguous.sandbox, 'lead-sisyphus', 'Execution lead: sisyphus\nExecution rationale: 이유');
+  await ambiguous.start('resume');
+  await ambiguous.ui.editor.onSubmit('/ulw-execute lead-');
+  assert.equal(ambiguous.ui.calls.hostSubmit.length, 0);
+  assert.match(ambiguous.ui.calls.notify.at(-1).message, /여러 계획/);
+});
+
+test('a late failure cannot revive an invalidated handoff', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  writePlan(session.sandbox, 'other-plan', '');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await readPlan(session, path, body);
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+
+  await readPlan(session, planPath(session.sandbox, 'other-plan'), 'anything', 'read-other');
+  await session.fire('tool_result', {
+    type: 'tool_result', toolName: 'task', toolCallId: 'task-1', input: {}, content: [], isError: true,
+  });
+  const blocked = await taskCall(session, 'task-2');
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /다른 계획/);
+});
+
+test('a new explicit execution replaces a failed handoff record', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  const blocked = await taskCall(session);
+  assert.equal(blocked.block, true);
+
+  await session.ui.editor.onSubmit('/ulw-execute missing-plan');
+  assert.equal(session.ui.calls.hostSubmit.length, 1);
+  assert.equal(await taskCall(session, 'task-2'), undefined);
+});
+
+test('a quoted option value with spaces is preserved', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit('/ulw-execute --worktree "C:/tmp/a b" lead-hephaestus --light');
+
+  assert.equal(session.orchestration.current, 'hephaestus');
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, '/ulw-execute --worktree "C:/tmp/a b" lead-hephaestus --light');
+});
+
+test('a failed re-read cannot restore coverage for a later delegation', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+  await readPlan(session, path, body);
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+
+  await session.fire('tool_call', {
+    type: 'tool_call', toolName: 'read', toolCallId: 'read-2', input: { path },
+  });
+  await session.fire('tool_result', {
+    type: 'tool_result', toolName: 'read', toolCallId: 'read-2', input: { path }, content: [], isError: true,
+  });
+  await session.fire('tool_result', {
+    type: 'tool_result', toolName: 'task', toolCallId: 'task-1', input: {}, content: [], isError: true,
+  });
+
+  const blocked = await taskCall(session, 'task-2');
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /읽어야/);
+});
+
+test('an apostrophe in a Windows path is not treated as a quote', async t => {
+  const session = makeSession(t);
+  writePlan(session.sandbox, 'probe', 'Execution lead: sisyphus\nExecution rationale: 이유');
+  await session.start('resume');
+
+  await session.ui.editor.onSubmit("/ulw-execute probe --worktree C:/O'Neil --light");
+
+  assert.equal(session.ui.calls.hostSubmit.at(-1).text, "/ulw-execute probe --worktree C:/O'Neil --light");
 });
 
 test('a read whose body differs from the stored plan blocks the delegation', async t => {

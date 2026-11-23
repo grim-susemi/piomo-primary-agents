@@ -70,6 +70,14 @@ test('selection prefers an explicit name and never falls through when it is miss
     { kind: 'explicit', slug: 'lead-hephaestus' },
   );
   assert.deepEqual(
+    selectExecutionPlan({ explicitName: 'lead-heph', availablePlans: ['lead-sisyphus', 'lead-hephaestus'] }),
+    { kind: 'explicit', slug: 'lead-hephaestus' },
+  );
+  assert.deepEqual(
+    selectExecutionPlan({ explicitName: 'lead-', availablePlans: ['lead-sisyphus', 'lead-hephaestus'] }),
+    { kind: 'blocked', reason: 'explicit-ambiguous' },
+  );
+  assert.deepEqual(
     selectExecutionPlan({ explicitName: 'lead-missing', availablePlans: ['lead-sisyphus'], activePlans: ['lead-sisyphus'] }),
     { kind: 'blocked', reason: 'explicit-not-found' },
   );

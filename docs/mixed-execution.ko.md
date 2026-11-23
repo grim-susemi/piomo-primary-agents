@@ -16,8 +16,17 @@
   "schema": "mixed-execution/save-restore/v1",
   "restored": true,
   "writeScope": ["src/core/state.mjs", "test/core-state.test.mjs"],
-  "tests": { "command": "node --test --test-isolation=none test/core-state.test.mjs", "exitCode": 0 },
-  "evidenceSha256": "<evidence file SHA-256>"
+  "tests": { "command": "node --test --test-isolation=none test/core-state.test.mjs", "exitCode": 0 }
+}
+```
+
+완료 기록 `done.json`:
+
+```json
+{
+  "schema": "mixed-execution/done/v1",
+  "saveRestoreSha256": "<save-restore.json bytes의 SHA-256>",
+  "completedBy": "<worker>"
 }
 ```
 
@@ -28,7 +37,7 @@
 | 결과 파일 | `save-restore.json`이 존재하고 `restored: true` | 인수 Todo 미완료 |
 | 시험 | 기록된 시험 명령의 종료 코드 `0` | 인수 Todo 미완료 |
 | 쓰기 범위 | 기술 Todo에 배정된 경로만 변경 | 인수 Todo 미완료 |
-| 증거 해시 | 인수 증거에 적은 SHA-256과 실제 파일 해시가 같음 | 인수 Todo 미완료 |
+| 증거 해시 | `done.json`의 `saveRestoreSha256`과 실제 `save-restore.json` 해시가 같음 | 인수 Todo 미완료 |
 | 총괄 | `acceptedBy: sisyphus` 한 명 | 인수 Todo 미완료 |
 
 인수 증거에는 `acceptedBy: sisyphus`와 같은 SHA-256을 남깁니다. 같은 파일의 작성자가 둘로 기록되면 인수는 실패입니다.
@@ -65,9 +74,9 @@ Execution lead: sisyphus
 Execution rationale: 하위 계획 결과를 인수해 최종 합격을 판정한다
 ```
 
-1. 소유자가 `/ulw-execute lead-mixed-restore`를 명시 실행합니다. Hephaestus가 역할을 맡고, 하위 작업 완료 시 `save-restore.json`과 하위 완료 기록의 SHA-256을 증거로 남깁니다.
+1. 소유자가 `/ulw-execute lead-mixed-restore`를 명시 실행합니다. Hephaestus가 역할을 맡고, 하위 작업 완료 시 결과 파일 `save-restore.json`과 완료 기록 `done.json`을 남깁니다. `done.json`의 `saveRestoreSha256`은 `save-restore.json` 바이트의 SHA-256입니다.
 2. 하위 작업 종료 뒤 이 두 파일만 상위 작업공간의 `.omo/evidence/lead-mixed-restore/`로 전달합니다.
-3. 별도 pane에서 소유자가 `/ulw-execute lead-mixed-parent`를 명시 실행합니다. Sisyphus 총괄이 인수 Todo에서 `acceptedBy: sisyphus`와 실제 파일의 같은 SHA-256을 확인한 뒤에만 첫 의존 Todo를 위임합니다.
+3. 별도 pane에서 소유자가 `/ulw-execute lead-mixed-parent`를 명시 실행합니다. 상위 Todo 1(인수)이 `acceptedBy: sisyphus`와 실제 `save-restore.json`의 같은 SHA-256을 확인한 뒤에만 Todo 2(의존 작업)를 위임하고, Todo 1이 끝나기 전에는 최종 합격을 선언하지 않습니다.
 
 실패 대조: 하위 완료 기록은 유지하고 전달 파일 바이트만 바꾸면, 상위 인수 Todo는 미완료이고 첫 의존 위임과 최종 합격은 각각 0건이어야 합니다.
 

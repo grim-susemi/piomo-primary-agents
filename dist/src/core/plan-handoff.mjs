@@ -39,6 +39,7 @@ export function createPlanHandoff({
     reason: null,
     reads: new Map(),
     covered: new Set(),
+    admitted: new Set(),
   };
 }
 
@@ -66,15 +67,19 @@ export function beginRead(handoff, { toolCallId, input, samePath, isPlan }) {
     return 'other';
   }
   const range = rangeOf(input, handoff.lines.length);
+  let cleared = false;
   for (let line = range.start; line <= range.end; line += 1) {
     if (handoff.covered.has(line)) {
       // Starting a re-read discards the earlier evidence for this plan.
       handoff.covered.clear();
+      cleared = true;
       break;
     }
   }
   handoff.reads.set(toolCallId, range);
-  if (handoff.status === 'verified') handoff.status = 'awaiting-read';
+  if (cleared && (handoff.status === 'verified' || handoff.status === 'admitted')) {
+    handoff.status = 'awaiting-read';
+  }
   return 'read';
 }
 
@@ -94,11 +99,11 @@ function compareRange(handoff, range, text, details) {
     // The tool appends one newline when it also emits a continuation notice.
     actual = actual.slice(0, -1);
   }
-  if (expected.length !== actual.length) return false;
+  if (expected.length !== actual.length) return { ok: false, count: 0 };
   for (let index = 0; index < expected.length; index += 1) {
-    if (expected[index] !== actual[index]) return false;
+    if (expected[index] !== actual[index]) return { ok: false, count: 0 };
   }
-  return true;
+  return { ok: true, count };
 }
 
 /**
@@ -112,13 +117,14 @@ export function completeRead(handoff, { toolCallId, text, details }) {
   if (!range) return { ok: false, verified: false, reason: 'not-tracked' };
   handoff.reads.delete(toolCallId);
   if (handoff.status === 'failed') return { ok: false, verified: false, reason: handoff.reason };
-  if (!compareRange(handoff, range, text, details)) {
+  const compared = compareRange(handoff, range, text, details);
+  if (!compared.ok) {
     handoff.status = 'failed';
     handoff.reason = 'body-mismatch';
     handoff.covered.clear();
     return { ok: false, verified: false, reason: handoff.reason };
   }
-  for (let line = range.start; line <= range.end; line += 1) handoff.covered.add(line);
+  for (let line = range.start; line < range.start + compared.count; line += 1) handoff.covered.add(line);
   if (handoff.covered.size === handoff.lines.length) {
     handoff.status = 'verified';
     handoff.reason = null;
@@ -133,7 +139,7 @@ export function completeRead(handoff, { toolCallId, text, details }) {
  * the owner must send a new explicit execution.
  * @returns {null | {block: true, reason: string}}
  */
-export function delegationVerdict(handoff, { live, fileSha }) {
+export function delegationVerdict(handoff, { live, fileSha, toolCallId }) {
   if (!handoff) return null;
   const fail = (reason) => {
     handoff.status = 'failed';
@@ -143,9 +149,9 @@ export function delegationVerdict(handoff, { live, fileSha }) {
   if (handoff.status === 'failed') {
     return { block: true, reason: `plan handoff failed: ${handoff.reason ?? 'unknown'}` };
   }
-  if (handoff.status === 'delegated') return null;
   if (handoff.reads.size > 0) return fail('read-in-flight');
-  if (handoff.status !== 'verified') return fail('read-required');
+  if (handoff.covered.size !== handoff.lines.length) return fail('read-required');
+  if (handoff.status !== 'verified' && handoff.status !== 'admitted') return fail('read-required');
   if (fileSha !== handoff.sha256) return fail('plan-changed');
   if (!live || live.role !== handoff.role
     || live.provider !== handoff.provider
@@ -153,7 +159,10 @@ export function delegationVerdict(handoff, { live, fileSha }) {
     || (handoff.thinking !== null && live.thinking !== handoff.thinking)) {
     return fail('role-changed');
   }
-  handoff.status = 'delegated';
+  // Admission is not success: every start re-checks the file and the live role
+  // until a result for an admitted call arrives.
+  handoff.status = 'admitted';
+  handoff.admitted.add(toolCallId);
   return null;
 }
 
