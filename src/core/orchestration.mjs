@@ -712,10 +712,11 @@ export function createOrchestrator(pi, options = {}) {
     for (const work of Object.values(works)) {
       if (!work || typeof work !== 'object') continue;
       if (!Array.isArray(work.session_ids) || !work.session_ids.includes(own)) continue;
-      const planName = typeof work.plan_name === 'string' && work.plan_name.length > 0
+      const rawName = typeof work.plan_name === 'string' && work.plan_name.length > 0
         ? work.plan_name
         : (typeof work.active_plan === 'string' && work.active_plan.length > 0
           ? basename(work.active_plan, '.md') : null);
+      const planName = typeof rawName === 'string' ? rawName.replace(/\.md$/i, '') : null;
       if (!planName) continue;
       if (work.status === 'active') active.add(planName);
       else if (work.status === 'paused') paused.add(planName);
