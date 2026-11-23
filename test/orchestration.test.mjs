@@ -552,6 +552,25 @@ test('the handoff record is discarded after the first delegation succeeds', asyn
   assert.equal(await taskCall(session, 'task-2'), undefined);
 });
 
+test('a failed delegation keeps the check active for the retry', async t => {
+  const session = makeSession(t);
+  const body = writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');
+  const path = planPath(session.sandbox, 'lead-hephaestus');
+  await session.start('resume');
+  await session.ui.editor.onSubmit('/ulw-execute lead-hephaestus');
+
+  await readPlan(session, path, body);
+  assert.equal(await taskCall(session, 'task-1'), undefined);
+  await session.fire('tool_result', {
+    type: 'tool_result', toolName: 'task', toolCallId: 'task-1', input: {}, content: [], isError: true,
+  });
+
+  writeFileSync(path, `${body}\nchanged\n`, 'utf8');
+  const blocked = await taskCall(session, 'task-2');
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /바뀌었어요/);
+});
+
 test('a read whose body differs from the stored plan blocks the delegation', async t => {
   const session = makeSession(t);
   writePlan(session.sandbox, 'lead-hephaestus', 'Execution lead: hephaestus\nExecution rationale: 이유');

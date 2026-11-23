@@ -16,8 +16,13 @@ export function sha256Text(text) {
   return createHash('sha256').update(normalizeText(text), 'utf8').digest('hex');
 }
 
+/** SHA-256 of the exact file bytes; CRLF and LF must not collapse. */
+export function sha256Bytes(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
 export function createPlanHandoff({
-  sessionId, path, text, role, provider, modelId, thinking,
+  sessionId, path, text, sha256, role, provider, modelId, thinking,
 }) {
   const body = normalizeText(text);
   return {
@@ -25,7 +30,7 @@ export function createPlanHandoff({
     path,
     body,
     lines: body.split('\n'),
-    sha256: sha256Text(body),
+    sha256: sha256 ?? sha256Text(body),
     role,
     provider: provider ?? null,
     modelId: modelId ?? null,

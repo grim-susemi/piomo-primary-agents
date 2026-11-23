@@ -31,7 +31,7 @@ import {
 import { resolveExecutionLead, selectExecutionPlan } from './execution-plan.mjs';
 import {
   beginRead, completeRead, createPlanHandoff, delegationVerdict, handoffBlockReason,
-  normalizeText, sha256Text,
+  normalizeText, sha256Bytes,
 } from './plan-handoff.mjs';
 import { realpathNearestAncestor, verdict } from './policy.mjs';
 import { applyOverlay } from './prompt.mjs';
@@ -742,18 +742,19 @@ export function createOrchestrator(pi, options = {}) {
   function planPath(cwd, slug) {
     const raw = join(cwd, '.omo', 'plans', `${slug}.md`);
     const normalized = realpathNearestAncestor(raw) ?? resolvePath(raw);
-    let text;
+    let bytes;
     try {
-      text = normalizeText(readFileSync(raw, 'utf8'));
+      bytes = readFileSync(raw);
     } catch {
       return null;
     }
-    return { raw, path: normalized, text, sha256: sha256Text(text) };
+    const text = normalizeText(bytes.toString('utf8'));
+    return { raw, path: normalized, text, sha256: sha256Bytes(bytes) };
   }
 
   function planTextAt(path) {
     try {
-      return sha256Text(readFileSync(path, 'utf8'));
+      return sha256Bytes(readFileSync(path));
     } catch {
       return null;
     }
@@ -942,6 +943,7 @@ export function createOrchestrator(pi, options = {}) {
         sessionId: sessionKey(),
         path: final.path,
         text: final.text,
+        sha256: final.sha256,
         role: lead.lead,
         provider: resolved.provider,
         modelId: resolved.modelId,
@@ -1081,6 +1083,12 @@ export function createOrchestrator(pi, options = {}) {
     ctxRef = ctx;
     if (event?.isError) {
       if (pendingHandoff && event?.toolName === 'read') pendingHandoff.reads.delete(event.toolCallId);
+      if (pendingHandoff && pendingHandoff.status === 'delegated'
+        && (event?.toolName === 'task' || event?.toolName === 'workflow')) {
+        // A failed delegation does not discard the check: the retry must pass
+        // the same read, hash and role checks again.
+        pendingHandoff.status = 'verified';
+      }
       return;
     }
     if (pendingHandoff && event?.toolName === 'read') observeHandoffReadResult(event, ctx);
